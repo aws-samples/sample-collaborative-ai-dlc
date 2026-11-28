@@ -1,9 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUp, Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { formatTimelineTimestamp } from '@/lib/timeAgo';
+import { formatAbsolute } from '@/lib/timeAgo';
+import { displayStageName } from '@/lib/displayNames';
+import {
+  buildTimeline,
+  countTimeline,
+  filterTimeline,
+  sentenceCaseSlug,
+  type TimelinePerson,
+  type TimelineEntry,
+  type TimelineFilter,
+  type TimelineGroup,
+  type TimelineTone,
+} from '@/lib/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState } from '@/components/ui/empty-state';
+import { Disclosure } from '@/components/ui/disclosure';
+import { TechnicalDetails } from '@/components/ui/technical-details';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Dialog,
   DialogContent,
@@ -12,7 +29,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -34,6 +51,7 @@ import { type OpenArtifact } from '@/components/intent/ArtifactMarkdown';
 import { scrollToReference } from '@/components/layout/scrollToReference';
 import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
+import { useAuth } from '@/contexts/AuthContext';
 import { nodeTypeBadge, shortNodeType, humanEdgeLabel } from '@/components/graph/nodeStyles';
 import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/services/intents';
 
@@ -46,7 +64,8 @@ import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/ser
 const FOLLOW_KEY = 'auto';
 
 export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
-  const { detail, stageRows, agentFocus, previewSeq } = useIntent();
+  const { detail, loading, stageRows, agentFocus, previewSeq, activityTabRequest, projectId } =
+    useIntent();
   const [activeTab, setActiveTab] = useState('timeline');
   const discussionsCtx = useDiscussions();
   const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
@@ -74,6 +93,10 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
     if (previewSeq > 0) setActiveTab('preview');
   }, [previewSeq]);
 
+  useEffect(() => {
+    if (activityTabRequest) setActiveTab(activityTabRequest.tab);
+  }, [activityTabRequest]);
+
   // Reset pinned selection when the intent changes.
   const intentKey = detail?.intent.id ?? null;
   useEffect(() => {
@@ -83,47 +106,67 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
   const running = stageRows.some((s) => s.state === 'RUNNING');
   const events = detail?.events ?? [];
 
+  // A missing or unloadable intent has no run to report on: the panel must not
+  // claim "No events yet" about it (R5-30).
+  if (!loading && !detail) {
+    return (
+      <div className="flex h-full w-full flex-col border-l border-border bg-sidebar">
+        <div className="flex h-10 shrink-0 items-center justify-end border-b border-border bg-background/60 px-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            onClick={onClose}
+            aria-label="Close activity panel"
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
+        <p className="px-3 py-12 text-center text-sm text-muted-foreground">
+          Nothing to show for this intent.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full w-full flex-col bg-sidebar border-l border-border">
+    <Tabs
+      value={activeTab}
+      onValueChange={setActiveTab}
+      className="flex h-full w-full flex-col bg-sidebar border-l border-border"
+    >
       {/* Header */}
       <div className="flex h-10 items-center gap-1 px-3 border-b border-border bg-background/60 shrink-0">
         <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="h-7 p-0.5 flex-nowrap">
-              <TabsTrigger value="agent" className="h-6 px-2 text-xs gap-1">
-                <Bot className="h-3 w-3 shrink-0" />
-                Agent
-                {running && (
-                  <span className="relative flex h-1.5 w-1.5 ml-0.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
-                  </span>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="timeline" className="h-6 px-2 text-xs gap-1">
-                <Clock className="h-3 w-3 shrink-0" />
-                Timeline
-                {events.length > 0 && (
-                  <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
-                    {events.length}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="discussions" className="h-6 px-2 text-xs gap-1">
-                <MessageSquare className="h-3 w-3 shrink-0" />
-                Discuss
-                {totalUnread > 0 && (
-                  <Badge className="h-4 px-1 text-[9px] ml-0.5">
-                    {totalUnread > 99 ? '99+' : totalUnread}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="preview" className="h-6 px-2 text-xs gap-1">
-                <Eye className="h-3 w-3 shrink-0" />
-                Preview
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <TabsList className="h-7 p-0.5 flex-nowrap">
+            <TabsTrigger value="agent" className="h-6 px-2 text-xs gap-1">
+              <Bot className="h-3 w-3 shrink-0" />
+              Agent
+              {running && (
+                <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="timeline" className="h-6 px-2 text-xs gap-1">
+              <Clock className="h-3 w-3 shrink-0" />
+              Timeline
+            </TabsTrigger>
+            <TabsTrigger value="discussions" className="h-6 px-2 text-xs gap-1">
+              <MessageSquare className="h-3 w-3 shrink-0" />
+              Discuss
+              {totalUnread > 0 && (
+                <Badge size="sm" className="ml-0.5 h-4 px-1">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="preview" className="h-6 px-2 text-xs gap-1">
+              <Eye className="h-3 w-3 shrink-0" />
+              Preview
+            </TabsTrigger>
+          </TabsList>
         </div>
         <Button
           variant="ghost"
@@ -138,19 +181,33 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
 
       {/* Content. The Discuss tab swaps between the thread list and the open
           thread; the Agent tab manages its own scrolling (stick-to-bottom), so
-          both render outside the shared ScrollArea. */}
-      {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
-        <DiscussionPanel />
-      ) : activeTab === 'agent' ? (
-        <AgentTab selectedKey={selectedKey} onSelectKey={setSelectedKey} />
-      ) : activeTab === 'preview' ? (
-        <PreviewTab />
-      ) : (
-        <ScrollArea className="flex-1">
-          {activeTab === 'discussions' ? <DiscussionsTab /> : <TimelineTab events={events} />}
-        </ScrollArea>
-      )}
-    </div>
+          both render outside the shared ScrollArea. One tabpanel hosts the
+          active tab so each trigger's aria-controls points at a real panel. */}
+      <TabsContent
+        value={activeTab}
+        className="mt-0 flex min-h-0 flex-1 flex-col focus-visible:ring-inset focus-visible:ring-offset-0"
+      >
+        {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
+          <DiscussionPanel />
+        ) : activeTab === 'agent' ? (
+          <AgentTab selectedKey={selectedKey} onSelectKey={setSelectedKey} />
+        ) : activeTab === 'preview' ? (
+          <PreviewTab />
+        ) : activeTab === 'discussions' ? (
+          <ScrollArea className="flex-1">
+            <DiscussionsTab />
+          </ScrollArea>
+        ) : (
+          // Keyed by space + intent: the shell keeps this panel mounted across
+          // intent navigation, and held-back events belong to one intent only.
+          <TimelineTab
+            key={`${projectId ?? ''}:${intentKey ?? ''}`}
+            events={events}
+            pending={!detail && loading}
+          />
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -175,6 +232,8 @@ function AgentTab({
     outputPaneStatus,
     setPaneVisible,
     hasEarlierOutput,
+    hasLoadedEarlierOutput,
+    loadEarlierOutput,
   } = useIntent();
   const [viewMode, setViewMode] = useState<'progress' | 'raw'>('progress');
 
@@ -220,8 +279,11 @@ function AgentTab({
     setPaneVisible(displayKey, true);
     return () => setPaneVisible(displayKey, false);
   }, [displayKey, ensureOutputs, setPaneVisible]);
-  const paneLoading = displayKey ? outputPaneStatus(displayKey) === 'loading' : false;
+  const paneStatus = displayKey ? outputPaneStatus(displayKey) : null;
+  const paneLoading = paneStatus === 'loading';
   const earlierTrimmed = displayKey ? hasEarlierOutput(displayKey) : false;
+  const earlierPartlyLoaded =
+    earlierTrimmed && displayKey ? hasLoadedEarlierOutput(displayKey) : false;
 
   // Stick-to-bottom auto-scroll: follow appends unless the user scrolled up.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -264,11 +326,11 @@ function AgentTab({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={FOLLOW_KEY} className="text-xs">
-                Follow run{followKey ? ` — ${stageNameOf(followKey)}` : ''}
+                Follow run{followKey ? ` — ${displayStageName(stageNameOf(followKey))}` : ''}
               </SelectItem>
               {orderedKeys.map((key) => (
                 <SelectItem key={key} value={key} className="text-xs">
-                  {stageNameOf(key)}
+                  {displayStageName(stageNameOf(key))}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -278,7 +340,7 @@ function AgentTab({
               type="button"
               onClick={() => setViewMode('progress')}
               className={cn(
-                'h-6 rounded-sm px-2 text-[11px] font-medium',
+                'h-6 rounded-sm px-2 text-2xs font-medium',
                 viewMode === 'progress'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:text-foreground',
@@ -290,7 +352,7 @@ function AgentTab({
               type="button"
               onClick={() => setViewMode('raw')}
               className={cn(
-                'h-6 rounded-sm px-2 text-[11px] font-medium',
+                'h-6 rounded-sm px-2 text-2xs font-medium',
                 viewMode === 'raw'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:text-foreground',
@@ -302,14 +364,27 @@ function AgentTab({
         </div>
       </div>
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-auto p-3">
-        {earlierTrimmed && (
-          <div className="mb-3 rounded-md border bg-muted/40 px-2 py-1.5">
+        {earlierTrimmed && displayKey && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
             <p className="text-xs text-muted-foreground">
-              Earlier output was trimmed to keep this page fast
+              {earlierPartlyLoaded
+                ? 'Part of the earlier output is still hidden to keep this page fast'
+                : 'Earlier output was trimmed to keep this page fast'}
             </p>
+            <Button size="xs" variant="outline" onClick={() => loadEarlierOutput(displayKey)}>
+              {earlierPartlyLoaded ? 'Load more earlier output' : 'Load earlier output'}
+            </Button>
           </div>
         )}
-        {viewMode === 'progress' ? (
+        {paneStatus === 'error' && displayKey && (
+          <ErrorState
+            size="section"
+            className="mb-3"
+            title="Agent output could not be loaded"
+            onRetry={() => ensureOutputs(displayKey)}
+          />
+        )}
+        {paneStatus === 'error' && !content.trim() ? null : viewMode === 'progress' ? (
           <AgentOutputTranscript
             rows={rows}
             loading={paneLoading}
@@ -330,157 +405,290 @@ function AgentTab({
 }
 
 // ---------------------------------------------------------------------------
-// Timeline tab — the intent's lifecycle events (init-ws, stage transitions,
-// questions, completion/failure), newest first
+// Timeline tab — one readable line per lifecycle event, grouped by stage
+// (newest first), raw payload one action away, no auto-scroll on new events
 // ---------------------------------------------------------------------------
 
-function TimelineTab({ events }: { events: IntentActivityEvent[] }) {
+const TIMELINE_FILTERS: { value: TimelineFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'questions', label: 'Questions' },
+  { value: 'documents', label: 'Documents' },
+  { value: 'errors', label: 'Errors' },
+];
+
+const FILTER_EMPTY_COPY: Record<Exclude<TimelineFilter, 'all'>, string> = {
+  questions: 'No questions in this run',
+  documents: 'No documents in this run',
+  errors: 'No errors in this run',
+};
+
+const TONE_DOT: Record<TimelineTone, string> = {
+  success: 'bg-agent-success',
+  waiting: 'bg-agent-waiting',
+  error: 'bg-agent-error',
+  running: 'bg-agent-running',
+  workspace: 'bg-phase-inception',
+  neutral: 'bg-muted-foreground',
+};
+
+const entryTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+function formatEntryTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? '' : entryTimeFormatter.format(date);
+}
+
+const AT_TOP_PX = 24;
+
+// Space members turn an actor's user id into a readable name. The
+// DiscussionProvider already loads them for the page (mentions, roles).
+const NO_MEMBERS: readonly TimelinePerson[] = [];
+
+function TimelineTab({
+  events,
+  pending = false,
+}: {
+  events: IntentActivityEvent[];
+  /** The intent detail has not answered yet: nothing is known about its events. */
+  pending?: boolean;
+}) {
+  const { stageNameOf, stageRows } = useIntent();
+  const { user } = useAuth();
+  const members = useDiscussions()?.members ?? NO_MEMBERS;
+  const [filter, setFilter] = useState<TimelineFilter>('all');
+  const [rendered, setRendered] = useState(events);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const atTopRef = useRef(true);
+
+  // A reader who scrolled down keeps their position: newer events are held
+  // back behind a "N new events" affordance until they ask for them or return
+  // to the top. Reloads that shrink or keep the list are applied in place.
+  // Scope: one intent — the parent remounts this tab when the intent changes.
+  useEffect(() => {
+    setRendered((prev) =>
+      prev === events || (!atTopRef.current && events.length > prev.length) ? prev : events,
+    );
+  }, [events]);
+
+  const heldBack = Math.max(0, events.length - rendered.length);
+  const showNewEvents = useCallback(() => {
+    setRendered(events);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [events]);
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    atTopRef.current = el.scrollTop < AT_TOP_PX;
+    if (atTopRef.current) setRendered(events);
+  }, [events]);
+
+  const groups = useMemo(
+    () => buildTimeline(rendered, { stageNameOf, stages: stageRows, currentUser: user, members }),
+    [rendered, stageNameOf, stageRows, user, members],
+  );
+  const totals = useMemo(() => countTimeline(groups), [groups]);
+  const visible = useMemo(() => filterTimeline(groups, filter), [groups, filter]);
+
+  // Loading is not an empty run: skeleton rows until the detail is known.
+  if (pending && events.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col gap-3 px-3 py-4" data-testid="timeline-loading">
+        <Skeleton label="Loading run activity" className="h-7 w-48 rounded-md" />
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-11 rounded-md" />
+        ))}
+      </div>
+    );
+  }
+
   if (events.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-3 text-center">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted mb-3">
+      <div className="flex flex-1 flex-col items-center justify-center px-3 py-12 text-center">
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
           <Clock className="h-5 w-5 text-muted-foreground" />
         </div>
         <p className="text-sm text-muted-foreground">No events yet</p>
-        <p className="text-xs text-muted-foreground/60 mt-1">
+        <p className="mt-1 text-xs text-muted-foreground">
           Run activity will appear here as it happens
         </p>
       </div>
     );
   }
+
   return (
-    <div className="px-3 py-2">
-      {events.toReversed().map((ev) => (
-        <IntentTimelineItem key={ev.eventId} event={ev} />
-      ))}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 border-b px-3 py-2">
+        <ToggleGroup
+          type="single"
+          value={filter}
+          onValueChange={(value) => {
+            if (value) setFilter(value as TimelineFilter);
+          }}
+          aria-label="Filter timeline"
+          className="flex-wrap gap-1"
+        >
+          {TIMELINE_FILTERS.map(({ value, label }) => (
+            <ToggleGroupItem
+              key={value}
+              value={value}
+              className="h-6 gap-1 px-2 text-2xs font-medium data-[state=on]:border-primary"
+            >
+              {label}
+              {/* Only errors carry a count: the one number that asks for a look. */}
+              {value === 'errors' && totals.errors > 0 && (
+                <span className="font-normal tabular-nums opacity-70">{totals.errors}</span>
+              )}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+      <div
+        ref={scrollRef}
+        data-testid="timeline-scroll"
+        onScroll={handleScroll}
+        className="relative min-h-0 flex-1 overflow-auto px-3 py-2"
+      >
+        {heldBack > 0 && (
+          <div className="pointer-events-none sticky top-0 z-10 flex justify-center pb-2">
+            <Button
+              size="xs"
+              className="pointer-events-auto shadow-md"
+              onClick={showNewEvents}
+              aria-live="polite"
+            >
+              <ArrowUp aria-hidden="true" />
+              {heldBack} new {heldBack === 1 ? 'event' : 'events'}
+            </Button>
+          </div>
+        )}
+        {visible.length === 0 && filter !== 'all' ? (
+          <EmptyState
+            size="section"
+            title={FILTER_EMPTY_COPY[filter]}
+            action={
+              <Button size="xs" variant="outline" onClick={() => setFilter('all')}>
+                Show all events
+              </Button>
+            }
+          />
+        ) : (
+          <TimelineGroups groups={visible} filter={filter} />
+        )}
+      </div>
     </div>
   );
 }
 
-// The release-semantics event families. Their outcome is
-// classified from the SUFFIX rather than enumerated per type, so a later stream
-// only has to EMIT `v2.<family>.<outcome>` and the feed colours it correctly
-// without a frontend change.
-const RELEASE_EVENT_FAMILIES = [
-  'v2.summary.',
-  'v2.persona.',
-  'v2.change.',
-  'v2.loopback.',
-  'v2.review.',
-  'v2.sensor.',
-  'v2.gate.',
-  'v2.plan.',
-  'v2.learning.',
-  'v2.units.',
-];
-const RELEASE_OUTCOME_FAILED = /(failed|blocked|halt|invalid|expired)$/;
-const RELEASE_OUTCOME_ATTENTION =
-  /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|dissent|warnings|override)$/;
-
-// Persona events get a readable role label in addition to their outcome color.
-const PERSONA_EVENT_LABELS: Record<string, string> = {
-  'v2.persona.contribution': 'Contribution',
-  'v2.persona.link_completed': 'Pipeline link',
-  'v2.persona.dissent': 'Maintained dissent',
-  'v2.persona.gap': 'No evidence recorded',
-  'v2.persona.question_withdrawn': 'Question withdrawn',
-};
-
-const PERSONA_EXCERPT_LIMIT = 240;
-
-function dissentRoundSuffix(event: IntentActivityEvent): string {
-  if (event.type !== 'v2.persona.dissent') return '';
-  const round = event.detail?.round;
-  if (typeof round !== 'number' || !Number.isFinite(round) || round < 1) return '';
-  const max = event.detail?.maxRounds;
-  return typeof max === 'number' && Number.isFinite(max) && max >= round
-    ? ` (round ${round}/${max})`
-    : ` (round ${round})`;
+function dayKey(timestamp: string): string {
+  return formatAbsolute(timestamp, { includeTime: false });
 }
 
-// Gate-plane sensor families. `v2.sensor.gate` is the per-gate summary ("Gate
-// sensors: X passed, Y flagged") — the ONLY record that the gate plane ran at all
-// when every sensor passed, so it gets a headline of its own rather than being
-// read as just another flagged verdict.
-const SENSOR_EVENT_LABELS: Record<string, string> = {
-  'v2.sensor.gate': 'Gate sensors',
-  'v2.sensor.flagged': 'Sensor flagged',
-  // The advisory reviewer's summary is its whole Markdown report; it reads as a
-  // headline plus a bounded, markup-free excerpt instead of a raw dump.
-  'v2.review.advisory': 'Advisory review',
-};
+const GROUPS_PAGE = 20;
 
-function sensorEventLabel(event: IntentActivityEvent): string | null {
-  return SENSOR_EVENT_LABELS[event.type] ?? null;
+function TimelineGroups({ groups, filter }: { groups: TimelineGroup[]; filter: TimelineFilter }) {
+  const [limit, setLimit] = useState(GROUPS_PAGE);
+  const firstStageKey = groups.find((g) => g.kind !== 'run')?.key ?? null;
+  const shown = groups.slice(0, limit);
+  const remaining = groups.length - shown.length;
+  let lastDay: string | null = null;
+  return (
+    <div className="divide-y divide-border/60">
+      {shown.map((group) => {
+        const day = dayKey(group.latestTimestamp);
+        const divider =
+          day !== lastDay ? (
+            <p className="pb-1 pt-3 text-xs font-medium text-muted-foreground first:pt-1">{day}</p>
+          ) : null;
+        lastDay = day;
+        return (
+          <div key={`${group.key}:${filter}`} className="border-0">
+            {divider}
+            {group.kind === 'run' ? (
+              <div className="py-1">
+                {group.entries.map((entry) => (
+                  <IntentTimelineItem key={entry.key} entry={entry} />
+                ))}
+              </div>
+            ) : (
+              <TimelineStageGroup
+                group={group}
+                defaultOpen={group.key === firstStageKey || filter !== 'all'}
+              />
+            )}
+          </div>
+        );
+      })}
+      {remaining > 0 && (
+        <div className="flex justify-center py-3">
+          <Button size="xs" variant="outline" onClick={() => setLimit((n) => n + GROUPS_PAGE * 2)}>
+            Show earlier activity ({remaining} more {remaining === 1 ? 'stage' : 'stages'})
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function personaEventLabel(event: IntentActivityEvent): string | null {
-  if (!event.type.startsWith('v2.persona.')) return null;
-  const label = `${PERSONA_EVENT_LABELS[event.type] ?? 'Persona session'}${dissentRoundSuffix(event)}`;
-  return event.actor && event.actor !== 'agentcore' ? `${label} — ${event.actor}` : label;
-}
-
-function personaExcerpt(summary: string | null): string {
-  const text = (summary ?? '')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/^\|?[\s:|-]+\|[\s:|-]*$/gm, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
-  return text.length > PERSONA_EXCERPT_LIMIT
-    ? `${text.slice(0, PERSONA_EXCERPT_LIMIT).trimEnd()}…`
-    : text;
-}
-
-function releaseEventDotColor(type: string): string | null {
-  if (!RELEASE_EVENT_FAMILIES.some((family) => type.startsWith(family))) return null;
-  if (RELEASE_OUTCOME_FAILED.test(type)) return 'bg-agent-error';
-  if (RELEASE_OUTCOME_ATTENTION.test(type)) return 'bg-agent-waiting';
-  return 'bg-agent-success';
-}
-
-// A gate pass whose summary reports nothing flagged is a clean pass, not an
-// attention item; every other event keeps its type-derived colour.
-function timelineDotColor(event: IntentActivityEvent): string {
-  if (event.type === 'v2.sensor.gate' && /\b0 flagged\b/.test(event.summary ?? '')) {
-    return 'bg-agent-success';
-  }
-  return eventDotColor(event.type);
-}
-
-// v2 event type → dot color (mirrors v1's TimelineEventItem visual, which is
-// typed to sprint events and can't be reused directly).
-function eventDotColor(type: string): string {
-  if (type === 'v2.execution.failed') return 'bg-agent-error';
-  if (type === 'v2.execution.succeeded' || type === 'v2.stage.succeeded') {
-    return 'bg-agent-success';
-  }
-  if (type === 'v2.question.answered') return 'bg-agent-success';
-  // Artifact create/update notes (broadcast by the MCP layer so artifacts
-  // appear in realtime) — green like v1's artifact_created events.
-  if (type.startsWith('v2.artifact.')) return 'bg-agent-success';
-  if (type === 'v2.question.asked' || type === 'v2.stage.parked') return 'bg-agent-waiting';
-  // A non-PASS sensor verdict (advisory or blocking) — flag it like a wait so a
-  // gap (e.g. a required artifact "missing") is scannable in the feed.
-  if (type === 'v2.sensor.flagged') return 'bg-agent-waiting';
-  if (type === 'v2.stage.resumed') return 'bg-agent-running';
-  if (type === 'v2.pr.opened' || type === 'v2.pr.recorded') return 'bg-agent-success';
-  if (
-    type === 'v2.tracker.commented' ||
-    type === 'v2.tracker.merged_commented' ||
-    type === 'v2.tracker.closed'
-  ) {
-    return 'bg-agent-success';
-  }
-  if (type === 'v2.tracker.failed') return 'bg-agent-error';
-  if (type === 'v2.tracker.blocked') return 'bg-agent-waiting';
-  if (type === 'v2.pr.failed' || type === 'v2.pr.record_failed') return 'bg-agent-error';
-  if (type === 'v2.pr.skipped') return 'bg-agent-waiting';
-  if (type.startsWith('v2.workspace.')) return 'bg-phase-inception';
-  // A gate answer that could not resume its run is a wait the human must clear,
-  // not a failure of the work — the answer itself is safely recorded.
-  if (type === 'v2.gate.resume_failed') return 'bg-agent-waiting';
-  return releaseEventDotColor(type) ?? 'bg-muted-foreground';
+function TimelineStageGroup({
+  group,
+  defaultOpen,
+}: {
+  group: TimelineGroup;
+  defaultOpen: boolean;
+}) {
+  // The one number a folded stage carries: failures, since they ask for a look.
+  // How many events or questions it holds shows on opening it.
+  const status = group.counts.errors > 0 && (
+    <Badge
+      size="sm"
+      variant="outline"
+      className="border-agent-error/30 bg-agent-error/10 text-agent-error-fg"
+    >
+      {group.counts.errors} failed
+    </Badge>
+  );
+  return (
+    <Disclosure
+      variant="row"
+      title={
+        <span className="whitespace-normal break-words">
+          {group.name}
+          {group.attempt > 1 && <span className="sr-only">{` · attempt ${group.attempt}`}</span>}
+        </span>
+      }
+      description={
+        [
+          group.attempt > 1 ? `Attempt ${group.attempt}` : null,
+          group.unitName ? `Unit ${group.unitName}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || undefined
+      }
+      summary={
+        <time
+          dateTime={group.latestTimestamp}
+          title={formatAbsolute(group.latestTimestamp)}
+          className="tabular-nums"
+        >
+          {formatEntryTime(group.latestTimestamp)}
+        </time>
+      }
+      status={status || undefined}
+      defaultOpen={defaultOpen}
+      headingLevel={3}
+      className="py-1"
+      contentClassName="px-1 pb-2 pt-0"
+    >
+      {group.entries.map((entry) => (
+        <IntentTimelineItem key={entry.key} entry={entry} />
+      ))}
+    </Disclosure>
+  );
 }
 
 function parseQuestions(
@@ -524,34 +732,37 @@ function answerSummary(
   return JSON.stringify(answer);
 }
 
-function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
-  const { stageNameOf } = useIntent();
-  const isAnswer = event.type === 'v2.question.answered';
+function IntentTimelineItem({ entry }: { entry: TimelineEntry }) {
+  const event = entry.events[entry.events.length - 1];
+  const isAnswer = !entry.grouped && event.type === 'v2.question.answered';
   const questions = isAnswer ? parseQuestions(event.questions) : [];
   const questionTexts = questions.map((q) => String(q.text ?? '')).filter(Boolean);
   const answer = isAnswer ? answerSummary(event.answer, questions) : '';
-  // A headline label replaces the raw summary; the summary then rides underneath
-  // as a bounded excerpt. Sensor-plane events use the same treatment so a gate
-  // pass reads as "Gate sensors" with the counts below it.
-  const headlineLabel = personaEventLabel(event) ?? sensorEventLabel(event);
-  const excerpt = headlineLabel ? personaExcerpt(event.summary) : '';
+  const time = formatEntryTime(entry.timestamp);
   return (
-    <div className="flex gap-3 py-2">
+    <div className="group flex gap-3 py-2">
       <div className="flex flex-col items-center">
-        <div className={cn('h-2 w-2 rounded-full mt-1.5 shrink-0', timelineDotColor(event))} />
-        <div className="w-px flex-1 bg-border mt-1" />
+        <div className={cn('mt-1.5 h-2 w-2 shrink-0 rounded-full', TONE_DOT[entry.tone])} />
+        <div className="mt-1 w-px flex-1 bg-border" />
       </div>
-      <div className="flex-1 min-w-0 pb-2">
-        <p className="text-xs font-medium leading-tight">
-          {headlineLabel ?? (event.summary || event.type)}
-        </p>
-        {headlineLabel && excerpt && (
-          <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-            {excerpt}
+      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 pb-1">
+        <p className="min-w-0 break-words text-xs font-medium leading-snug">{entry.label}</p>
+        {time && (
+          <time
+            dateTime={entry.timestamp}
+            title={formatAbsolute(entry.timestamp)}
+            className="pt-px text-2xs tabular-nums text-muted-foreground"
+          >
+            {time}
+          </time>
+        )}
+        {entry.excerpt && (
+          <p className="col-span-2 mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+            {entry.excerpt}
           </p>
         )}
-        {isAnswer && (
-          <div className="mt-1 space-y-1 rounded border bg-muted/20 px-2 py-1.5 text-[11px]">
+        {isAnswer && (questionTexts.length > 0 || answer || event.artifacts?.length) && (
+          <div className="col-span-2 mt-1 space-y-1 rounded border bg-muted/20 px-2 py-1.5 text-xs">
             {questionTexts.length > 0 && (
               <p className="line-clamp-3 whitespace-pre-wrap text-muted-foreground">
                 {questionTexts.join('\n')}
@@ -561,30 +772,24 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
             {event.artifacts && event.artifacts.length > 0 && (
               <div className="flex flex-wrap gap-1 pt-0.5">
                 {event.artifacts.map((artifact) => (
-                  <button
+                  <Button
                     key={artifact.id}
-                    type="button"
-                    className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                    size="xs"
+                    variant="outline"
+                    className="h-auto min-h-7 max-w-full whitespace-normal py-1 text-left"
                     onClick={() => focusWorkProduct({ kind: 'artifact', id: artifact.id })}
                   >
-                    {artifact.title || artifact.id}
-                  </button>
+                    {artifact.title || 'Document'}
+                  </Button>
                 ))}
               </div>
             )}
           </div>
         )}
-        <div className="flex items-center gap-2 mt-0.5">
-          {event.stageInstanceId && (
-            <span className="text-[10px] text-muted-foreground">
-              {stageNameOf(event.stageInstanceId)}
-            </span>
-          )}
-          {event.timestamp && (
-            <span className="text-[10px] text-muted-foreground/60">
-              {formatTimelineTimestamp(event.timestamp)}
-            </span>
-          )}
+        {/* Ids and raw values one action away, without a visible row under every
+            event: the trigger appears on hover/focus and stays while open. */}
+        <div className="col-span-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100">
+          <TechnicalDetails title="Details" items={entry.technical} />
         </div>
       </div>
     </div>
@@ -748,8 +953,8 @@ function ArtifactPreviewContent({
       <div className="flex items-center gap-2 mb-2">
         <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
         {artifact.artifactType && (
-          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60">
-            {artifact.artifactType}
+          <span className="text-2xs font-medium text-muted-foreground">
+            {sentenceCaseSlug(artifact.artifactType)}
           </span>
         )}
         <ArtifactStaleBadge artifact={artifact} />
@@ -875,10 +1080,8 @@ function ItemPreviewContent({
       <div className="flex items-center gap-2 mb-2">
         <Badge
           variant="outline"
-          className={cn(
-            'h-5 px-1.5 text-[10px] uppercase tracking-wider',
-            nodeTypeBadge(item.type),
-          )}
+          size="sm"
+          className={cn('uppercase tracking-wider', nodeTypeBadge(item.type))}
         >
           {shortNodeType(item.type)}
         </Badge>
@@ -922,7 +1125,7 @@ function ItemPreviewContent({
         <div className="space-y-4 mb-5">
           {fields.map((field) => (
             <div key={field.name}>
-              <div className="text-[11px] uppercase font-semibold tracking-wider text-muted-foreground mb-1">
+              <div className="text-2xs uppercase font-semibold tracking-wider text-muted-foreground mb-1">
                 {humanizeFieldName(field.name)}
               </div>
               {field.kind === 'list' && Array.isArray(field.value) ? (
@@ -943,14 +1146,14 @@ function ItemPreviewContent({
 
       {grouped.size > 0 && (
         <div className="space-y-3 mb-5">
-          <div className="text-[11px] uppercase font-semibold tracking-wider text-muted-foreground">
+          <div className="text-2xs uppercase font-semibold tracking-wider text-muted-foreground">
             Relationships
           </div>
           {Array.from(grouped.entries()).map(([key, items]) => {
             const edgeLabel = key.slice(key.indexOf(':') + 1);
             return (
               <div key={key}>
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground/60 mb-1">
+                <div className="text-2xs uppercase tracking-wider text-muted-foreground mb-1">
                   {humanEdgeLabel(edgeLabel)}
                 </div>
                 <div className="space-y-0.5 ml-2">
@@ -959,10 +1162,8 @@ function ItemPreviewContent({
                     const badge = (
                       <Badge
                         variant="outline"
-                        className={cn(
-                          'h-5 px-1.5 text-[9px] shrink-0',
-                          nodeTypeBadge(neighbor.type),
-                        )}
+                        size="sm"
+                        className={cn('shrink-0', nodeTypeBadge(neighbor.type))}
                       >
                         {shortNodeType(neighbor.type)}
                       </Badge>

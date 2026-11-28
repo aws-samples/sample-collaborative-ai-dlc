@@ -8,7 +8,7 @@
 // as a bounded excerpt underneath.
 
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 
 const LONG_POSITION = `OBJECT: ${'the retry budget is wrong '.repeat(20)}`;
 
@@ -91,6 +91,7 @@ const EVENTS = [
   timestamp: `2026-09-24T10:${String(index).padStart(2, '0')}:00Z`,
 }));
 
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: null }) }));
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
@@ -116,13 +117,13 @@ vi.mock('@/components/discussion/DiscussionsTab', () => ({
 import { IntentActivityPanel } from './IntentActivityPanel';
 
 describe('IntentActivityPanel ensemble persona rendering', () => {
-  it('headlines each persona event with its role and the persona that acted', () => {
+  it('headlines each persona event with its role and the persona that acted (slug humanised)', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
 
-    expect(screen.getByText('Contribution — aidlc-design-agent')).toBeTruthy();
-    expect(screen.getByText('Pipeline link — aidlc-architect-agent')).toBeTruthy();
-    expect(screen.getByText('Maintained dissent (round 1/2) — aidlc-quality-agent')).toBeTruthy();
-    expect(screen.getByText('No evidence recorded — aidlc-developer-agent')).toBeTruthy();
+    expect(screen.getByText('Contribution — Design Agent')).toBeTruthy();
+    expect(screen.getByText('Pipeline link — Architect Agent')).toBeTruthy();
+    expect(screen.getByText('Maintained dissent (round 1/2) — Quality Agent')).toBeTruthy();
+    expect(screen.getByText('No evidence recorded — Developer Agent')).toBeTruthy();
   });
 
   it('names no persona when the engine, not a persona, produced the event', () => {
@@ -141,7 +142,7 @@ describe('IntentActivityPanel ensemble persona rendering', () => {
 
   it('truncates a long excerpt so one verbose persona cannot flood the feed', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    const headline = screen.getByText('Contribution — aidlc-verbose-agent');
+    const headline = screen.getByText('Contribution — Verbose Agent');
     const excerpt = headline.parentElement?.querySelector('p.line-clamp-3');
     expect(excerpt?.textContent?.endsWith('\u2026')).toBe(true);
     expect((excerpt?.textContent ?? '').length).toBeLessThanOrEqual(241);
@@ -150,25 +151,25 @@ describe('IntentActivityPanel ensemble persona rendering', () => {
 
   it('leaves a non-persona event headlined by its own summary', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Stage X succeeded')).toBeTruthy();
+    expect(screen.getByText('Stage X completed')).toBeTruthy();
   });
 });
 
 describe('IntentActivityPanel dissent rounds and the gate-sensor summary', () => {
   it('names the dissent round out of the cap so a final objection reads as final', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Maintained dissent (round 1/2) — aidlc-quality-agent')).toBeTruthy();
-    expect(screen.getByText('Maintained dissent (round 2/2) — aidlc-architect-agent')).toBeTruthy();
+    expect(screen.getByText('Maintained dissent (round 1/2) — Quality Agent')).toBeTruthy();
+    expect(screen.getByText('Maintained dissent (round 2/2) — Architect Agent')).toBeTruthy();
   });
 
   it('shows the round alone when the event recorded no cap', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Maintained dissent (round 1) — aidlc-ops-agent')).toBeTruthy();
+    expect(screen.getByText('Maintained dissent (round 1) — Ops Agent')).toBeTruthy();
   });
 
   it('omits the round when the event never stamped one', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Maintained dissent — aidlc-security-agent')).toBeTruthy();
+    expect(screen.getByText('Maintained dissent — Security Agent')).toBeTruthy();
   });
 
   it('headlines the gate-plane sensor summary and keeps its counts as the excerpt', () => {

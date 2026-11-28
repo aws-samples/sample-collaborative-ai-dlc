@@ -7,7 +7,7 @@
 // a failure of the work, because the answer itself is safely recorded.
 
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 
 const EVENTS = [
   { eventId: 'e1', type: 'v2.gate.resume_failed', summary: 'Gate answer recorded, resume failed' },
@@ -54,6 +54,7 @@ const EVENTS = [
   timestamp: `2026-08-11T10:${String(index).padStart(2, '0')}:00Z`,
 }));
 
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: null }) }));
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
@@ -124,7 +125,7 @@ describe('IntentActivityPanel release-semantics event colours', () => {
 
   it('names a withdrawn persona question instead of the generic persona label', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
-    expect(screen.getByText('Question withdrawn — design-agent')).toBeInTheDocument();
+    expect(screen.getByText('Question withdrawn — Design Agent')).toBeInTheDocument();
   });
 
   it('treats a failed gate resume as a wait to clear, not a failed run', () => {
@@ -146,9 +147,9 @@ describe('IntentActivityPanel release-semantics event colours', () => {
 });
 
 describe('IntentActivityPanel headline fallback', () => {
-  it('names the event type when the summary is empty', () => {
+  it('names the event in plain words when the summary is empty', () => {
     render(<IntentActivityPanel onClose={() => {}} />);
 
-    expect(screen.getByText('v2.stage.note')).toBeInTheDocument();
+    expect(screen.getByText('Stage note')).toBeInTheDocument();
   });
 });
