@@ -1,13 +1,19 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
-import { Link, MemoryRouter, Routes, Route } from 'react-router';
+import { Link, MemoryRouter, Routes, Route, useNavigate } from 'react-router';
 
-import { shouldDefaultOpen } from './AppShell';
+import {
+  ACTIVITY_PANEL_OPEN_STORAGE_KEY,
+  shouldActivityPanelDefaultOpen,
+  shouldDefaultOpen,
+} from './AppShell';
 
 const shellTestState = vi.hoisted(() => ({
   panelsInline: true,
   onAgentFocus: null as null | (() => void),
+  mediaListeners: [] as Array<(event: MediaQueryListEvent) => void>,
+  sprintPipelineBarImported: vi.fn(),
   installNavIntent: vi.fn(),
   uninstallNavIntent: vi.fn(),
   notifyNavigation: vi.fn(),
@@ -29,6 +35,9 @@ vi.mock('@/lib/routePrefetch', () => ({
 vi.mock('@/hooks/useIdleNext', () => ({
   useIdleNext: (...args: unknown[]) => shellTestState.useIdleNext(...args),
 }));
+
+const DESKTOP_WIDTH = 1280;
+const MOBILE_WIDTH = 390;
 
 // ---------------------------------------------------------------------------
 // Unit tests for shouldDefaultOpen (pure function — no mocking needed)
@@ -75,15 +84,70 @@ describe('shouldDefaultOpen', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unit tests for shouldActivityPanelDefaultOpen (pure — viewport + persisted
+// desktop preference + route)
+// ---------------------------------------------------------------------------
+
+describe('shouldActivityPanelDefaultOpen', () => {
+  const route = '/space/p1/intent/i1';
+
+  it('is closed below 1024px whatever the route or persisted preference says', () => {
+    expect(shouldActivityPanelDefaultOpen({ width: 390, persisted: true, route })).toBe(false);
+    expect(shouldActivityPanelDefaultOpen({ width: 1023, persisted: null, route })).toBe(false);
+    expect(
+      shouldActivityPanelDefaultOpen({ width: 768, persisted: true, route: '/space/p1/sprint/s1' }),
+    ).toBe(false);
+  });
+
+  it('follows the route default at 1024px and above when nothing is persisted', () => {
+    expect(shouldActivityPanelDefaultOpen({ width: 1024, persisted: null, route })).toBe(true);
+    expect(shouldActivityPanelDefaultOpen({ width: 1440, persisted: undefined, route })).toBe(true);
+    expect(
+      shouldActivityPanelDefaultOpen({ width: 1440, persisted: null, route: `${route}/graph` }),
+    ).toBe(false);
+  });
+
+  it('lets the persisted desktop preference override the route default', () => {
+    expect(shouldActivityPanelDefaultOpen({ width: 1440, persisted: false, route })).toBe(false);
+    expect(
+      shouldActivityPanelDefaultOpen({ width: 1440, persisted: true, route: `${route}/graph` }),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration: AppShell route-aware panel defaults
 // ---------------------------------------------------------------------------
 
-vi.mock('@/components/layout/AppSidebar', () => ({
-  AppSidebar: () => <nav data-testid="sidebar" />,
+vi.mock('@/components/layout/AppSidebar', async () => {
+  const router = await import('react-router');
+  return {
+    AppSidebar: ({ onCreateSpace }: { onCreateSpace?: () => void }) => (
+      <nav data-testid="sidebar">
+        <button type="button" onClick={onCreateSpace}>
+          New space
+        </button>
+        <router.Link data-testid="sidebar-dashboard-link" to="/dashboard">
+          Spaces
+        </router.Link>
+      </nav>
+    ),
+  };
+});
+vi.mock('@/components/CreateProjectModal', () => ({
+  CreateProjectModal: ({ onClose }: { onClose: () => void }) => (
+    <div role="dialog" aria-label="Create space">
+      <button type="button" onClick={onClose}>
+        Cancel
+      </button>
+    </div>
+  ),
 }));
 vi.mock('@/components/layout/AppHeader', () => ({
   AppHeader: ({
+    onToggleSidebar,
     onToggleActivity,
+    sidebarCollapsed,
     activityPanelOpen,
   }: {
     onToggleSidebar: () => void;
@@ -93,6 +157,15 @@ vi.mock('@/components/layout/AppHeader', () => ({
     activityPanelOpen: boolean;
   }) => (
     <header>
+      <button
+        id="sidebar-toggle"
+        data-testid="toggle-sidebar"
+        aria-label="Toggle sidebar"
+        aria-expanded={!sidebarCollapsed}
+        onClick={onToggleSidebar}
+      >
+        toggle sidebar
+      </button>
       <button data-testid="toggle-activity" onClick={onToggleActivity}>
         toggle
       </button>
@@ -100,7 +173,10 @@ vi.mock('@/components/layout/AppHeader', () => ({
     </header>
   ),
 }));
-vi.mock('@/components/layout/SprintPipelineBar', () => ({ SprintPipelineBar: () => null }));
+vi.mock('@/components/layout/SprintPipelineBar', () => {
+  shellTestState.sprintPipelineBarImported();
+  return { SprintPipelineBar: () => <div data-testid="sprint-pipeline-bar" /> };
+});
 vi.mock('@/components/layout/ActivityPanel', () => ({
   ActivityPanel: () => <div data-testid="activity-panel" />,
 }));
@@ -117,7 +193,7 @@ vi.mock('@/components/layout/StatusBar', () => ({ StatusBar: () => null }));
 vi.mock('@/components/layout/CommandPalette', () => ({
   CommandPalette: () => null,
 }));
-vi.mock('@/components/discussion', () => ({
+vi.mock('@/components/discussion/DiscussionProvider', () => ({
   DiscussionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('@/contexts/IntentContext', () => ({
@@ -134,13 +210,12 @@ vi.mock('@/contexts/IntentContext', () => ({
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectSprintsCache: () => ({ sprints: [] }),
-}));
-vi.mock('@/hooks/useMediaQuery', () => ({
-  useMediaQuery: () => shellTestState.panelsInline,
+  useProjectsCache: () => ({ projects: [], loading: false, refresh: vi.fn() }),
 }));
 vi.mock('@/hooks/useResizablePanel', () => ({
   useResizablePanel: () => ({
     width: 380,
+    effectiveMaxWidth: 540,
     handleResizeStart: () => {},
     handleResizeKey: () => {},
     resetWidth: () => {},
@@ -148,6 +223,15 @@ vi.mock('@/hooks/useResizablePanel', () => ({
 }));
 
 import { AppShell } from './AppShell';
+
+function HistoryBackButton() {
+  const navigate = useNavigate();
+  return (
+    <button data-testid="go-back" onClick={() => navigate(-1)}>
+      Back
+    </button>
+  );
+}
 
 function renderAtRoute(path: string) {
   return render(
@@ -179,12 +263,25 @@ function renderAtRoute(path: string) {
             element={<div>observability</div>}
           />
           <Route path="/space/:projectId/sprint/:sprintId" element={<div>sprint</div>} />
-          <Route path="/dashboard" element={<div>dashboard</div>} />
+          <Route
+            path="/dashboard"
+            element={
+              <>
+                <div>dashboard</div>
+                <HistoryBackButton />
+              </>
+            }
+          />
           <Route path="*" element={<div>page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
   );
+}
+
+function setViewport(panelsInline: boolean) {
+  shellTestState.panelsInline = panelsInline;
+  window.innerWidth = panelsInline ? DESKTOP_WIDTH : MOBILE_WIDTH;
 }
 
 it('installs the delegated listener once, updates its location, and uninstalls on unmount', async () => {
@@ -212,17 +309,72 @@ it('runs the idle next-page pass for the signed-in user', () => {
   expect(shellTestState.useIdleNext).toHaveBeenCalledWith(true, true);
 });
 
+function setPanelsInline(panelsInline: boolean) {
+  setViewport(panelsInline);
+  act(() => {
+    for (const listener of shellTestState.mediaListeners) {
+      listener({ matches: panelsInline } as MediaQueryListEvent);
+    }
+  });
+}
+
 beforeEach(() => {
-  shellTestState.panelsInline = true;
+  setViewport(true);
   shellTestState.onAgentFocus = null;
+  shellTestState.mediaListeners = [];
+  shellTestState.sprintPipelineBarImported.mockClear();
+  window.localStorage.clear();
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(min-width: 1024px)' && shellTestState.panelsInline,
+      get matches() {
+        return query === '(min-width: 1024px)' && shellTestState.panelsInline;
+      },
       media: query,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        shellTestState.mediaListeners.push(listener);
+      },
+      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        shellTestState.mediaListeners = shellTestState.mediaListeners.filter(
+          (registered) => registered !== listener,
+        );
+      },
     })),
+  });
+});
+
+describe('AppShell Create space dialog (R3-8)', () => {
+  it('closes the narrow drawer when New space opens the dialog, so the dialog can be reached', async () => {
+    const user = userEvent.setup();
+    setViewport(false);
+    renderAtRoute('/dashboard');
+    await user.click(screen.getByTestId('toggle-sidebar'));
+    expect(screen.getByLabelText('Main navigation')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'New space' }));
+
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+    const dialog = screen.getByRole('dialog', { name: 'Create space' });
+    // Nothing modal is left to hide the dialog or block pointer and focus.
+    expect(dialog.closest('[aria-hidden="true"]')).toBeNull();
+    expect(document.body).not.toHaveStyle('pointer-events: none');
+    dialog.querySelector('button')!.focus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it('keeps the dialog opened from the sidebar mounted when the viewport narrows and the sidebar unmounts', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    await userEvent.click(screen.getByRole('button', { name: 'New space' }));
+    expect(screen.getByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
+
+    setPanelsInline(false);
+    expect(screen.queryByTestId('sidebar')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
+
+    setPanelsInline(true);
+    expect(screen.getByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Create space' })).toBeNull();
   });
 });
 
@@ -243,6 +395,14 @@ describe('AppShell panel default behavior', () => {
     const columns = grid.style.gridTemplateColumns;
     expect(columns).toContain('calc(100vw - min(380px, 30vw) - 360px)');
     expect(columns).not.toContain('45vw');
+  });
+
+  it('names the inline activity panel landmark at 1024px and above', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    await screen.findByTestId('intent-activity-panel');
+    const panel = screen.getByRole('complementary', { name: 'Activity panel' });
+    expect(panel).toHaveAttribute('id', 'activity-panel');
+    expect(panel).toContainElement(screen.getByTestId('intent-activity-panel'));
   });
 
   it('closes panel on intent graph', () => {
@@ -280,12 +440,11 @@ describe('AppShell panel default behavior', () => {
   });
 
   it('moves focus into a narrow activity overlay and restores its invoking control', async () => {
-    shellTestState.panelsInline = false;
+    setViewport(false);
     const user = userEvent.setup();
     renderAtRoute('/space/p1/intent/i1');
 
-    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
-    await user.click(screen.getByTestId('toggle-activity'));
+    expect(screen.getByTestId('panel-state').textContent).toBe('closed');
     expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
 
     const preview = screen.getByTestId('open-preview');
@@ -297,5 +456,178 @@ describe('AppShell panel default behavior', () => {
     await user.click(close);
     expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
     await waitFor(() => expect(preview).toHaveFocus());
+  });
+
+  it('closes a narrow activity overlay with Escape and restores its invoking control', async () => {
+    setViewport(false);
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    const preview = screen.getByTestId('open-preview');
+    await user.click(preview);
+    const close = await screen.findByRole('button', { name: 'Close activity panel' });
+    await waitFor(() => expect(close).toHaveFocus());
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(preview).toHaveFocus());
+  });
+
+  it('keeps the activity overlay closed on first render below 1024px even when a desktop preference says open', () => {
+    setViewport(false);
+    window.localStorage.setItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY, 'true');
+    renderAtRoute('/space/p1/intent/i1');
+
+    expect(screen.getByTestId('panel-state').textContent).toBe('closed');
+    expect(screen.queryByLabelText('Activity panel')).not.toBeInTheDocument();
+  });
+
+  it('closes the docked activity panel when the window narrows below 1024px instead of overlaying the page', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('panel-state').textContent).toBe('open');
+
+    setPanelsInline(false);
+
+    expect(screen.getByTestId('panel-state').textContent).toBe('closed');
+    expect(screen.queryByLabelText('Activity panel')).not.toBeInTheDocument();
+  });
+
+  it('closes a narrow activity overlay when the route category changes', async () => {
+    setViewport(false);
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    await user.click(screen.getByTestId('toggle-activity'));
+    expect(await screen.findByLabelText('Activity panel')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('navigate-dashboard'));
+    await waitFor(() => expect(screen.getByTestId('panel-state').textContent).toBe('closed'));
+  });
+
+  it('respects a persisted closed preference at 1024px and above', () => {
+    window.localStorage.setItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY, 'false');
+    renderAtRoute('/space/p1/intent/i1');
+
+    expect(screen.getByTestId('panel-state').textContent).toBe('closed');
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+  });
+
+  it('respects a persisted open preference at 1024px and above on a closed-by-default route', async () => {
+    window.localStorage.setItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY, 'true');
+    renderAtRoute('/space/p1/intent/i1/graph');
+
+    expect(screen.getByTestId('panel-state').textContent).toBe('open');
+    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
+  });
+
+  it('persists a manual desktop toggle but not a narrow-screen one', async () => {
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    await user.click(screen.getByTestId('toggle-activity'));
+    expect(window.localStorage.getItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY)).toBe('false');
+
+    setPanelsInline(false);
+    await user.click(screen.getByTestId('toggle-activity'));
+    expect(screen.getByTestId('panel-state').textContent).toBe('open');
+    expect(window.localStorage.getItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY)).toBe('false');
+  });
+
+  it('does not import the v1 sprint pipeline bar on a v2 route', async () => {
+    renderAtRoute('/dashboard');
+
+    expect(screen.getByText('dashboard')).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(shellTestState.sprintPipelineBarImported).not.toHaveBeenCalled();
+  });
+
+  it('loads the v1 sprint pipeline bar on a sprint route', async () => {
+    renderAtRoute('/space/p1/sprint/s1');
+
+    expect(await screen.findByTestId('sprint-pipeline-bar')).toBeInTheDocument();
+    expect(shellTestState.sprintPipelineBarImported).toHaveBeenCalled();
+  });
+
+  it('keeps desktop preference separate from the mobile drawer across breakpoint and route changes', async () => {
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    setPanelsInline(false);
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+    expect(screen.getByTestId('toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(screen.getByTestId('toggle-sidebar'));
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    expect(screen.getByLabelText('Main navigation')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('toggle-sidebar')).toHaveFocus());
+
+    setPanelsInline(true);
+    await waitFor(() => expect(screen.getByTestId('sidebar')).toBeInTheDocument());
+    await user.click(screen.getByTestId('toggle-sidebar'));
+    expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument();
+
+    setPanelsInline(false);
+    await user.click(screen.getByTestId('toggle-sidebar'));
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    // The drawer is modal (scrim + focus trap): the page behind it is inert,
+    // so navigation comes from the drawer itself and closes it.
+    expect(screen.getByTestId('navigate-dashboard')).toHaveStyle('pointer-events: none');
+    await user.click(screen.getByTestId('sidebar-dashboard-link'));
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+
+    await user.click(screen.getByTestId('toggle-sidebar'));
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    // Browser back (history) while the drawer is open: the route change closes it.
+    fireEvent.click(screen.getByTestId('go-back'));
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+
+    setPanelsInline(true);
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
+  });
+});
+
+describe('AppShell keyboard access', () => {
+  it('offers "Skip to content" as the first Tab stop and moves focus to the main landmark', async () => {
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    await user.tab();
+    const skip = screen.getByRole('link', { name: 'Skip to content' });
+    expect(skip).toHaveFocus();
+    expect(skip).toHaveAttribute('href', '#main-content');
+
+    await user.keyboard('{Enter}');
+    const main = screen.getByRole('main');
+    expect(main).toHaveAttribute('id', 'main-content');
+    expect(main).toHaveAttribute('tabindex', '-1');
+    expect(main).toHaveFocus();
+  });
+
+  it('exposes the resize handles as valued separators that control their panel', async () => {
+    renderAtRoute('/space/p1/intent/i1');
+    await screen.findByTestId('intent-activity-panel');
+
+    const sidebarHandle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    expect(sidebarHandle).toHaveAttribute('aria-orientation', 'vertical');
+    expect(sidebarHandle).toHaveAttribute('aria-controls', 'app-sidebar');
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', '380');
+    expect(sidebarHandle).toHaveAttribute('aria-valuemin', '200');
+    expect(sidebarHandle).toHaveAttribute('aria-valuemax', '420');
+    expect(sidebarHandle).toHaveAttribute('aria-valuetext', '380 pixels');
+    expect(sidebarHandle.className).toMatch(/focus-visible:ring-2/);
+
+    const activityHandle = screen.getByRole('separator', { name: 'Resize activity panel' });
+    expect(activityHandle).toHaveAttribute('aria-controls', 'activity-panel');
+    expect(activityHandle).toHaveAttribute('aria-valuenow', '380');
+    expect(activityHandle).toHaveAttribute('aria-valuemin', '300');
+    expect(activityHandle).toHaveAttribute('aria-valuemax', '540');
+    expect(activityHandle.className).toMatch(/focus-visible:ring-2/);
   });
 });

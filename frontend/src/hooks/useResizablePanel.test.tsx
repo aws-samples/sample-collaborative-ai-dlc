@@ -31,6 +31,7 @@ describe('useResizablePanel', () => {
     const { result } = renderHook(() => useResizablePanel({ ...options, reserveWidth: 620 }));
     grow(result, 200);
     expect(result.current.width).toBe(1300);
+    expect(result.current.effectiveMaxWidth).toBe(1300);
   });
 
   it('keeps the fixed and viewport caps for panels that set them', () => {
@@ -46,6 +47,7 @@ describe('useResizablePanel', () => {
     const { result } = renderHook(() => useResizablePanel({ ...options, reserveWidth: 700 }));
     grow(result, 10);
     expect(result.current.width).toBe(300);
+    expect(result.current.effectiveMaxWidth).toBe(300);
   });
 
   it('clamps a stored width to what the window allows', () => {

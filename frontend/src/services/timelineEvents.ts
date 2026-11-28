@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, type ApiGetOptions } from './api';
 
 export type TimelineEventType =
   | 'agent_started'
@@ -30,5 +30,8 @@ export interface TimelineEvent {
 // v1 timeline events are read-only: the create route was removed with the v1
 // engine — only the list remains.
 export const timelineEventsService = {
-  list: (sprintId: string) => api.get<TimelineEvent[]>(`/sprints/${sprintId}/timeline-events`),
+  list: (sprintId: string, options?: ApiGetOptions) =>
+    options
+      ? api.get<TimelineEvent[]>(`/sprints/${sprintId}/timeline-events`, options)
+      : api.get<TimelineEvent[]>(`/sprints/${sprintId}/timeline-events`),
 };

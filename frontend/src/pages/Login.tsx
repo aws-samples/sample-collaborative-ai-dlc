@@ -4,13 +4,14 @@ import { useAuth } from '@/contexts/AuthContext';
 import { authConfiguration } from '@/services/auth';
 import { PasswordResetRequiredError } from '@/services/authErrors';
 import { PasswordResetForm } from '@/components/auth/PasswordResetForm';
-import { passwordPolicyError } from '@/lib/passwordPolicy';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { PASSWORD_POLICY_HINT, passwordPolicyError } from '@/lib/passwordPolicy';
+import { Card, CardContent, CardHeader, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Building2, FolderGit2, Loader2, LogIn } from 'lucide-react';
 import { BrandMark } from '@/components/layout/BrandMark';
+import { getBranding } from '@/lib/branding';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -34,13 +35,26 @@ export default function Login() {
     needsDisplayName,
   } = useAuth();
   const location = useLocation();
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname || '/dashboard';
+  const origin = (location.state as { from?: { pathname: string; search?: string; hash?: string } })
+    ?.from;
+  const from =
+    origin?.pathname?.startsWith('/') && !origin.pathname.startsWith('//')
+      ? `${origin.pathname}${origin.search ?? ''}${origin.hash ?? ''}`
+      : '/dashboard';
   const localEnabled = authConfiguration.mode !== 'sso-only';
   const ssoEnabled = authConfiguration.mode !== 'local';
 
   useEffect(() => {
     if (isAuthenticated && !needsDisplayName) setError('');
   }, [isAuthenticated, needsDisplayName]);
+
+  useEffect(() => {
+    const previous = document.title;
+    document.title = `Sign in · ${getBranding().name}`;
+    return () => {
+      document.title = previous;
+    };
+  }, []);
 
   // Paint the form immediately while the session check runs; the Navigate
   // below still redirects as soon as an existing session resolves.
@@ -117,17 +131,17 @@ export default function Login() {
   };
 
   const errorBanner = error ? (
-    <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
+    <div role="alert" className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
       <p className="text-sm text-destructive">{error}</p>
     </div>
   ) : null;
 
   if (reset && localEnabled) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <main className="min-h-screen flex items-center justify-center bg-background p-4">
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
-            <CardTitle>Reset your password</CardTitle>
+            <h1 className="font-semibold leading-none tracking-tight">Reset your password</h1>
             <CardDescription>We will email a verification code to your account</CardDescription>
           </CardHeader>
           <CardContent>
@@ -151,13 +165,13 @@ export default function Login() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </main>
     );
   }
 
   if (needsDisplayName) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <main className="min-h-screen flex items-center justify-center bg-background p-4">
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <div className="flex justify-center mb-2">
@@ -165,7 +179,7 @@ export default function Login() {
                 <FolderGit2 className="h-5 w-5 text-primary-foreground" />
               </div>
             </div>
-            <CardTitle>Set your display name</CardTitle>
+            <h1 className="font-semibold leading-none tracking-tight">Set your display name</h1>
             <CardDescription>This name will be visible to other collaborators</CardDescription>
           </CardHeader>
           <CardContent>
@@ -195,13 +209,13 @@ export default function Login() {
             </form>
           </CardContent>
         </Card>
-      </div>
+      </main>
     );
   }
 
   if (needsNewPassword) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <main className="min-h-screen flex items-center justify-center bg-background p-4">
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <div className="flex justify-center mb-2">
@@ -209,32 +223,39 @@ export default function Login() {
                 <FolderGit2 className="h-5 w-5 text-primary-foreground" />
               </div>
             </div>
-            <CardTitle>Set new password</CardTitle>
-            <CardDescription>Please set a new password for your account</CardDescription>
+            <h1 className="font-semibold leading-none tracking-tight">Set a new password</h1>
+            <CardDescription>
+              Your account was created with a temporary password. Choose your own to continue.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleNewPassword} className="space-y-4">
               {errorBanner}
               <div>
-                <Label htmlFor="newPw">New Password</Label>
+                <Label htmlFor="newPw">New password</Label>
                 <Input
                   id="newPw"
                   type="password"
+                  autoComplete="new-password"
+                  aria-describedby="newPwPolicyHint"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="New password"
                   disabled={isSubmitting}
+                  autoFocus
                   className="mt-1"
                 />
+                <p id="newPwPolicyHint" className="mt-1 text-xs text-muted-foreground">
+                  {PASSWORD_POLICY_HINT}
+                </p>
               </div>
               <div>
-                <Label htmlFor="confirmPw">Confirm Password</Label>
+                <Label htmlFor="confirmPw">Confirm new password</Label>
                 <Input
                   id="confirmPw"
                   type="password"
+                  autoComplete="new-password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Confirm password"
                   disabled={isSubmitting}
                   className="mt-1"
                 />
@@ -242,21 +263,21 @@ export default function Login() {
               <Button type="submit" className="w-full" disabled={isSubmitting}>
                 {isSubmitting ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Setting...
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...
                   </>
                 ) : (
-                  'Set Password'
+                  'Set password'
                 )}
               </Button>
             </form>
           </CardContent>
         </Card>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <main className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
@@ -269,7 +290,7 @@ export default function Login() {
               }
             />
           </div>
-          <CardTitle>Sign in to AI-DLC</CardTitle>
+          <h1 className="font-semibold leading-none tracking-tight">Sign in to AI-DLC</h1>
           <CardDescription>Collaborative AI-Driven Development</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -380,6 +401,6 @@ export default function Login() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </main>
   );
 }

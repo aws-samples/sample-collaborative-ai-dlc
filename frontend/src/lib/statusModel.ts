@@ -615,18 +615,35 @@ const TERMINAL_STATUSES: Partial<Record<StatusKind, ReadonlySet<string>>> = {
   unit: new Set<UnitStatusKey>(['MERGED', 'FAILED']),
 };
 
+export function isTerminalIntentStatus(status: string | null | undefined): boolean {
+  return Boolean(status) && TERMINAL_INTENT_STATUSES.has(status!);
+}
+
+/**
+ * The pill text for a derived intent status. Open states carry a duration:
+ * "Waiting for input · 108 days", "Stalled · no activity for 4 months";
+ * compact (dense lists) "Waiting · 108 d", "Stalled · 4 mo". Ended states
+ * carry a point in time: "Failed 59 days ago", compact "Failed 59 d ago".
+ */
+export function intentStatusLabel(
+  derived: Pick<DerivedIntentStatus, 'key' | 'stalled' | 'since'>,
+  { now = Date.now(), compact = false }: { now?: Clock; compact?: boolean } = {},
+): string {
+  return statusLabel('intent', derived.key, {
+    since: derived.since,
+    stalled: derived.stalled,
+    now,
+    compact,
+  });
+}
+
 const COMPACT_LABELS: Partial<Record<string, string>> = {
   'intent:WAITING': 'Waiting',
   'stage:WAITING_FOR_HUMAN': 'Waiting',
   'unit:WAITING_INPUT': 'Waiting',
 };
 
-/**
- * The pill text for a status. Open states carry a duration:
- * "Waiting for input · 108 days", "Stalled · no activity for 4 months";
- * compact (dense lists) "Waiting · 108 d", "Stalled · 4 mo". Ended states
- * carry a point in time: "Failed 59 days ago", compact "Failed 59 d ago".
- */
+/** Pill text for any status kind; see `intentStatusLabel`. */
 export function statusLabel<K extends StatusKind>(
   kind: K,
   status: string,

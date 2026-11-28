@@ -1,72 +1,37 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
-import { trackersService, type JiraPendingChoice } from '@/services/trackers';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router';
+import { trackersService } from '@/services/trackers';
 import { OAuthCallbackShell } from '@/components/OAuthCallbackShell';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+import { useOAuthReturnPath } from '@/hooks/useOAuthReturnPath';
+import { useOAuthExchange } from '@/hooks/useOAuthExchange';
+import { Button } from '@/components/ui/button';
 
 type Status = 'loading' | 'choose' | 'finalizing' | 'success' | 'error';
 
 export default function JiraCallback() {
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [status, setStatus] = useState<Status>('loading');
+  const [finalState, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [choice, setChoice] = useState<JiraPendingChoice | null>(null);
-  const [chosenCloudId, setChosenCloudId] = useState<string | null>(null);
+  const [selection, setChosenCloudId] = useState<string | null>(null);
 
   const meta = getTrackerProvider('jira-cloud');
 
-  // Consume the saved return path once so no exit (including the error state)
-  // leaves it behind for a later OAuth flow. `??=` keeps the value when
-  // StrictMode re-runs this effect.
-  const returnToRef = useRef<string | null>(null);
-  useEffect(() => {
-    returnToRef.current ??= sessionStorage.getItem('oauth_return_to');
-    sessionStorage.removeItem('oauth_return_to');
-  }, []);
-
-  useEffect(() => {
-    const code = searchParams.get('code');
-    const state = searchParams.get('state');
-
-    if (!code) {
-      setStatus('error');
-      setError('Missing authorization code');
-      return;
-    }
-
-    fetch(
-      `${API_BASE_URL}${meta.callbackPath}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state ?? '')}`,
-    )
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) {
-          setStatus('success');
-          return;
-        }
-        if (data.pendingChoice) {
-          setChoice(data.pendingChoice);
-          setChosenCloudId(data.pendingChoice.resources[0]?.cloudId ?? null);
-          setStatus('choose');
-          return;
-        }
-        setStatus('error');
-        setError(data.error || `Failed to connect ${meta.displayName}`);
-      })
-      .catch(() => {
-        setStatus('error');
-        setError(`Failed to connect ${meta.displayName}`);
-      });
-  }, [searchParams, navigate, meta.callbackPath, meta.displayName]);
-
-  const leave = useCallback(() => {
-    const returnTo = returnToRef.current;
-    // Jira connections originate in space settings. Avoid returning through
-    // browser history, which may lead back to Atlassian's consent screen.
-    navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });
-  }, [navigate]);
+  const { back, resume } = useOAuthReturnPath();
+  const result = useOAuthExchange(meta.callbackPath, meta.displayName);
+  const choice = result?.pendingChoice;
+  // Same rule as the project picker: never preselect among several sites —
+  // the first one is rarely the right one and Connect would silently bind it.
+  // A single site is not a choice, so it is selected for the user.
+  const chosenCloudId =
+    selection ?? (choice?.resources.length === 1 ? choice.resources[0].cloudId : null);
+  const status =
+    finalState ?? (!result ? 'loading' : result.success ? 'success' : choice ? 'choose' : 'error');
+  const leave = useCallback(
+    () => navigate(resume ?? '/dashboard', { replace: true }),
+    [resume, navigate],
+  );
 
   useEffect(() => {
     if (status !== 'success') return;
@@ -103,7 +68,12 @@ export default function JiraCallback() {
 
   if (status === 'error') {
     return (
-      <OAuthCallbackShell status="error" providerLabel={meta.displayName} errorMessage={error} />
+      <OAuthCallbackShell
+        status="error"
+        providerLabel={meta.displayName}
+        errorMessage={error ?? result?.error}
+        backTo={back}
+      />
     );
   }
 
@@ -139,17 +109,16 @@ export default function JiraCallback() {
             ))}
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={leave} className="px-4 py-2 border rounded text-sm">
-              Cancel
-            </button>
-            <button
+            <Button
               type="button"
-              onClick={handleConfirm}
-              disabled={!chosenCloudId}
-              className="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-60"
+              onClick={() => navigate(back, { replace: true })}
+              variant="outline"
             >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleConfirm} disabled={!chosenCloudId}>
               Connect
-            </button>
+            </Button>
           </div>
         </div>
       )}

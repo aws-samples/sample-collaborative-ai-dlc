@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
+import { Loader2 } from 'lucide-react';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -19,8 +20,12 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-indigo-600"></div>
+      <div
+        role="status"
+        className="min-h-screen flex items-center justify-center gap-2 text-sm text-muted-foreground"
+      >
+        <Loader2 aria-hidden="true" className="h-4 w-4 motion-safe:animate-spin" />
+        Loading workspace…
       </div>
     );
   }
