@@ -558,6 +558,7 @@ describe('ToolsRegistry', () => {
           'UnsupportedImageError: The operating system and/or package manager are not supported.',
         severityCounts: {},
         findings: [],
+        evaluatedAt: '2026-11-27T10:00:00.000Z',
       },
     };
     list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
@@ -565,18 +566,126 @@ describe('ToolsRegistry', () => {
 
     expect(await screen.findAllByText('Scan unavailable')).toHaveLength(3);
     expect(
-      screen.getByText(/This is a scan limitation, not a detected vulnerability/),
+      screen.getByText(
+        'ECR could not scan this image: the operating system and/or package manager are not supported. This is a scan limitation, not a detected vulnerability. The platform checks the scan again periodically, for example after enhanced scanning is turned on in the ECR registry settings. You can also rebuild the version or continue without a scan.',
+      ),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/image format/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Rebuild' }));
+    expect(retry).toHaveBeenCalledWith('go', 'tv-go-1');
     expect(screen.getByRole('link', { name: /Open ECR/ })).toHaveAttribute(
       'href',
       'https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/123456789012/managed-tools?region=eu-west-1',
     );
     await user.click(screen.getByRole('button', { name: 'Continue without scan' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('No package finding was checked.');
+    expect(screen.getByRole('alertdialog')).not.toHaveTextContent('periodically');
     expect(screen.getByRole('alertdialog')).toHaveTextContent(
-      'This does not mean a vulnerability was found',
+      'Continue only when you trust the publisher and download source.',
     );
     await user.click(screen.getByRole('button', { name: 'Continue after review' }));
-    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1', {
+      imageDigest: publishedVersion.imageDigest,
+      scanEvaluatedAt: '2026-11-27T10:00:00.000Z',
+    });
+  });
+
+  it('shows the new scan when it changed while the continue dialog was open', async () => {
+    const user = userEvent.setup();
+    const imageDigest = `sha256:${'d'.repeat(64)}`;
+    const unavailable = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      imageDigest,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        description: null,
+        severityCounts: {},
+        findings: [],
+        evaluatedAt: '2026-11-27T10:00:00.000Z',
+      },
+    };
+    const rescanned = {
+      ...unavailable,
+      scanFindings: {
+        status: 'ACTIVE',
+        severityCounts: { CRITICAL: 1 },
+        findings: [
+          {
+            id: 'CVE-2026-9',
+            severity: 'CRITICAL',
+            packageName: 'openssl',
+            packageVersion: '3.0.0',
+            uri: null,
+          },
+        ],
+        findingsTruncated: false,
+        evaluatedAt: '2026-11-27T10:15:00.000Z',
+      },
+    };
+    list
+      .mockResolvedValueOnce([{ ...goTool, versions: [unavailable] }])
+      .mockResolvedValue([{ ...goTool, versions: [rescanned] }]);
+    acceptFindings.mockRejectedValueOnce(
+      new ApiError(409, 'The scan changed after it was shown. Review it and decide again.', {
+        error: 'The scan changed after it was shown. Review it and decide again.',
+        code: 'TOOL_SCAN_CHANGED',
+      }),
+    );
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Continue without scan' }));
+    await user.click(screen.getByRole('button', { name: 'Continue after review' }));
+
+    expect(
+      await screen.findByText('The scan changed after it was shown. Review it and decide again.'),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('CVE-2026-9')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue without scan' })).not.toBeInTheDocument();
+    expect(acceptFindings).toHaveBeenCalledOnce();
+  });
+
+  it('says ECR could not scan a tool image when it gave no reason', async () => {
+    const unsupportedVersion = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      scanFindings: { status: 'UNSUPPORTED', description: null, severityCounts: {}, findings: [] },
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
+    render(<ToolsRegistry />);
+
+    expect(
+      await screen.findByText(/^ECR could not scan this image\. This is a scan limitation/),
+    ).toBeInTheDocument();
+  });
+
+  it('offers a rebuild when ECR no longer scans a tool image', async () => {
+    const user = userEvent.setup();
+    const expiredVersion = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      imageUri: '123456789012.dkr.ecr.eu-west-1.amazonaws.com/managed-tools',
+      scanFindings: {
+        status: 'SCAN_ELIGIBILITY_EXPIRED',
+        description: 'The image is no longer eligible for scanning.',
+        severityCounts: {},
+        findings: [],
+      },
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [expiredVersion] }]);
+    render(<ToolsRegistry />);
+
+    expect((await screen.findAllByText('Scan expired')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Rebuild to scan a new image').length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        'ECR no longer scans this image because its scan eligibility expired. Rebuild the version to build and scan a new image, or continue without a scan.',
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Rebuild' }));
+    expect(retry).toHaveBeenCalledWith('go', 'tv-go-1');
+    // Publishing without a scan stays possible, as for any image ECR cannot scan.
+    expect(screen.getByRole('button', { name: 'Continue without scan' })).toBeInTheDocument();
   });
 
   it('says the counts of an incomplete tool scan are partial before an admin accepts it', async () => {
@@ -621,7 +730,10 @@ describe('ToolsRegistry', () => {
       'The part it read holds 1 Critical and 0 High package findings',
     );
     await user.click(screen.getByRole('button', { name: 'Accept findings' }));
-    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1', {
+      imageDigest,
+      scanEvaluatedAt: null,
+    });
   });
 
   it('shows an accepted ECR scan limitation as resolved evidence', async () => {

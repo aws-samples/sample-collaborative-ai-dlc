@@ -420,8 +420,13 @@ export const toolsService = {
     api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/build`, {}),
   retry: (toolId: string, versionId: string) =>
     api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/retry`, {}),
-  acceptFindings: (toolId: string, versionId: string) =>
-    api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/acknowledge`, {}),
+  // The image and scan the administrator reviewed: the platform refuses the
+  // decision when either changed after the dialog opened.
+  acceptFindings: (
+    toolId: string,
+    versionId: string,
+    reviewed: { imageDigest: string | null; scanEvaluatedAt: string | null },
+  ) => api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/acknowledge`, reviewed),
   publish: (toolId: string, versionId: string) =>
     api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/publish`, {}),
   recommend: (toolId: string, versionId: string) =>

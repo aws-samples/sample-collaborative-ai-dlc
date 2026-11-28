@@ -133,7 +133,7 @@ URL, and **Open ECR** is available after the image exists.
 | `QUEUED`          | CodeBuild has been requested.                                                                | Wait or open **CodeBuild logs**                    |
 | `BUILDING`        | Source import, installation, normalization, and functional checks are running.               | Open **CodeBuild logs**                            |
 | `SCANNING`        | The immutable OCI artifact exists and ECR scan results are being evaluated.                  | Wait or open **ECR**                               |
-| `SECURITY_REVIEW` | Critical or High findings, or a scan limitation, require an explicit administrator decision. | Review the findings or scan limitation             |
+| `SECURITY_REVIEW` | Critical or High findings, or a scan limitation, require an explicit administrator decision. | Review the findings or the scan limitation         |
 | `READY`           | Source, artifact, scan decision, and verification evidence are complete.                     | **Publish**                                        |
 | `PUBLISHED`       | The immutable version can be selected by environments.                                       | **Make recommended** when it should be the default |
 | `FAILED`          | Import, installation, scan processing, or verification failed.                               | Inspect the error, edit, or retry                  |
@@ -424,9 +424,26 @@ The administrator can:
 - Choose **Review package findings** when Critical or High package findings
   were detected, then explicitly continue to record the decision and move the
   version to `READY`.
-- Choose **Continue without scan** when ECR cannot inspect the artifact format.
-  The dialog explains that this is a scanner limitation, not a detected
-  vulnerability.
+- Choose **Continue without scan** when ECR cannot scan the artifact. The
+  status shows the reason ECR gave, and the dialog explains that no package
+  finding was checked.
+- Choose **Rebuild** when the scan is unavailable. **Scan unavailable** means
+  ECR could not scan the image, for example a `FROM scratch` artifact with
+  basic scanning. **Scan expired** means ECR no longer scans the image because
+  its scan eligibility expired. Rebuild builds and scans a new image of the
+  same version.
+
+While a version shows **Scan unavailable**, the status function reads its ECR
+scan again periodically. After enhanced scanning is turned on, a scan ECR can
+run goes through the same gate as a new build: Critical or High findings, or a
+result too large to read completely, wait for review, and anything else makes
+the version `READY`. A decision an
+administrator takes in the meantime is kept. A decision covers the image and
+scan shown when its dialog opened: if a recheck or a rebuild replaces them
+before the administrator confirms, the platform refuses the decision, shows the
+new scan, and asks for a new decision. If the image was deleted from the
+repository, the version moves to **Needs attention** (`tool_image_not_found`)
+and offers **Retry**, which rebuilds the image.
 
 Acceptance does not publish the version. The findings and acceptance record
 remain visible after publication and in every environment revision that

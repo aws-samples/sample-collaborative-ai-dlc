@@ -530,9 +530,41 @@ const statusClass = (status: string) => {
   return 'bg-muted/50 text-muted-foreground';
 };
 
+// ECR could not scan the image (UNSUPPORTED), or no longer scans it
+// (SCAN_ELIGIBILITY_EXPIRED): no finding was checked.
+const isScanUnavailable = (version: ManagedToolVersion) =>
+  version.scanFindings?.status === 'UNSUPPORTED' ||
+  version.scanFindings?.status === 'SCAN_ELIGIBILITY_EXPIRED';
+const scanExpired = (version: ManagedToolVersion) =>
+  version.scanFindings?.status === 'SCAN_ELIGIBILITY_EXPIRED';
+
+// What ECR answered, without the error class name and in sentence case.
+const scanUnavailableReason = (version: ManagedToolVersion) => {
+  if (scanExpired(version)) {
+    return 'ECR no longer scans this image because its scan eligibility expired.';
+  }
+  const reason = (version.scanFindings?.description ?? '')
+    .replace(/^\w+Error:\s*/, '')
+    .trim()
+    .replace(/\.$/, '');
+  // Lower-case the first word, but not an acronym such as "OS".
+  const [first = '', ...rest] = reason.split(' ');
+  const lead = first === first.toUpperCase() ? first : first.toLowerCase();
+  return reason
+    ? `ECR could not scan this image: ${[lead, ...rest].join(' ')}.`
+    : 'ECR could not scan this image.';
+};
+
+// What the administrator can do about it, shown with the status.
+const scanUnavailableActions = (version: ManagedToolVersion) =>
+  scanExpired(version)
+    ? 'Rebuild the version to build and scan a new image, or continue without a scan.'
+    : 'This is a scan limitation, not a detected vulnerability. The platform checks the scan again periodically, for example after enhanced scanning is turned on in the ECR registry settings. You can also rebuild the version or continue without a scan.';
+
 const toolStatusLabel = (version: ManagedToolVersion) => {
   if (version.status === 'SECURITY_REVIEW') {
-    return version.scanFindings?.status === 'UNSUPPORTED' ? 'Scan unavailable' : 'Review required';
+    if (scanExpired(version)) return 'Scan expired';
+    return isScanUnavailable(version) ? 'Scan unavailable' : 'Review required';
   }
   const labels: Record<string, string> = {
     DRAFT: 'Draft',
@@ -563,9 +595,8 @@ const toolSidebarTask = (tool: ManagedTool, version: ManagedToolVersion | null) 
   if (version.status === 'BUILDING') return 'Building and verifying version';
   if (version.status === 'SCANNING') return 'Scanning tool image packages';
   if (version.status === 'SECURITY_REVIEW') {
-    return version.scanFindings?.status === 'UNSUPPORTED'
-      ? 'Review the scan limitation'
-      : 'Review security findings';
+    if (scanExpired(version)) return 'Rebuild to scan a new image';
+    return isScanUnavailable(version) ? 'Review the scan limitation' : 'Review security findings';
   }
   if (version.status === 'READY') return 'Publish this version';
   if (version.status === 'PUBLISHED') {
@@ -578,8 +609,7 @@ const toolSidebarTask = (tool: ManagedTool, version: ManagedToolVersion | null) 
 };
 
 function ToolStatus({ version }: { version: ManagedToolVersion }) {
-  const scanUnavailable =
-    version.status === 'SECURITY_REVIEW' && version.scanFindings?.status === 'UNSUPPORTED';
+  const scanUnavailable = version.status === 'SECURITY_REVIEW' && isScanUnavailable(version);
   return (
     <Badge
       variant="outline"
@@ -610,7 +640,7 @@ function ToolLifecycle({
   version: ManagedToolVersion;
   recommended: boolean;
 }) {
-  const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
+  const scanUnsupported = isScanUnavailable(version);
   const counts = version.scanFindings?.severityCounts ?? {};
   const critical = Number(counts.CRITICAL ?? 0);
   const high = Number(counts.HIGH ?? 0);
@@ -649,7 +679,7 @@ function ToolLifecycle({
         : version.status === 'SCANNING'
           ? 'The image was built. ECR is checking its operating-system packages.'
           : version.status === 'SECURITY_REVIEW' && scanUnsupported
-            ? 'ECR could not inspect this image format. This is a scan limitation, not a detected vulnerability.'
+            ? `${scanUnavailableReason(version)} ${scanUnavailableActions(version)}`
             : version.status === 'SECURITY_REVIEW' && version.scanFindings?.incomplete
               ? `The part of the scan the platform read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings before continuing.`
               : version.status === 'SECURITY_REVIEW'
@@ -768,7 +798,7 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
     Boolean(version.securityFindingsAcceptedAt),
   );
   const imageFindingsUrl = ecrImageConsoleUrl(version.imageUri, version.imageDigest);
-  const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
+  const scanUnsupported = isScanUnavailable(version);
   const scanLimitationAccepted =
     scanUnsupported &&
     (version.verification?.securityScan === 'ACCEPTED' ||
@@ -911,7 +941,7 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
 function VersionDetails({ tool, version }: { tool: ManagedTool; version: ManagedToolVersion }) {
   const needsEvidence =
     version.status === 'FAILED' ||
-    (version.status === 'SECURITY_REVIEW' && version.scanFindings?.status !== 'UNSUPPORTED');
+    (version.status === 'SECURITY_REVIEW' && !isScanUnavailable(version));
   const [open, setOpen] = useState(needsEvidence);
 
   useEffect(() => {
@@ -1785,20 +1815,34 @@ export function ToolsRegistry() {
   };
 
   const requestSecurityReview = (tool: ManagedTool, version: ManagedToolVersion) => {
-    const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
+    const scanUnsupported = isScanUnavailable(version);
     const counts = version.scanFindings?.severityCounts ?? {};
     const critical = Number(counts.CRITICAL ?? 0);
     const high = Number(counts.HIGH ?? 0);
     setConfirmation({
       title: scanUnsupported ? 'Continue without an automated package scan?' : 'Review findings?',
       description: scanUnsupported
-        ? 'ECR could not inspect this image format. This does not mean a vulnerability was found. Continue only when you trust the publisher and download source.'
+        ? `${scanUnavailableReason(version)} No package finding was checked. Continue only when you trust the publisher and download source.`
         : version.scanFindings?.incomplete
           ? `The scan has more findings than the platform reads. The part it read holds ${critical} Critical and ${high} High package findings, and the unread findings may include more. Review the complete findings in ECR first. Continuing records your review without a complete count and allows this version to be published.`
           : `ECR found ${critical} Critical and ${high} High package findings. Continuing records your review and allows this version to be published.`,
       actionLabel: scanUnsupported ? 'Continue after review' : 'Accept findings',
       onConfirm: () =>
-        void run('accept', () => toolsService.acceptFindings(tool.toolId, version.versionId)),
+        void run('accept', async () => {
+          try {
+            await toolsService.acceptFindings(tool.toolId, version.versionId, {
+              imageDigest: version.imageDigest ?? null,
+              scanEvaluatedAt: version.scanFindings?.evaluatedAt ?? null,
+            });
+          } catch (reason) {
+            // The scan changed while the dialog was open: show the current
+            // one so the administrator reviews it before deciding again.
+            if (reason instanceof ApiError && reason.body?.code === 'TOOL_SCAN_CHANGED') {
+              await load(tool.toolId, version.versionId).catch(() => undefined);
+            }
+            throw reason;
+          }
+        }),
     });
   };
 
@@ -2134,6 +2178,24 @@ export function ToolsRegistry() {
                               Retry
                             </Button>
                           )}
+                          {selectedVersion?.status === 'SECURITY_REVIEW' &&
+                            isScanUnavailable(selectedVersion) && (
+                              <Button
+                                size="sm"
+                                disabled={Boolean(busy) || missingDependencies.length > 0}
+                                onClick={() =>
+                                  void run('retry', () =>
+                                    toolsService.retry(
+                                      selectedTool.toolId,
+                                      selectedVersion.versionId,
+                                    ),
+                                  )
+                                }
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                Rebuild
+                              </Button>
+                            )}
                           {selectedVersion?.status === 'SECURITY_REVIEW' && (
                             <Button
                               size="sm"
@@ -2141,12 +2203,12 @@ export function ToolsRegistry() {
                               disabled={Boolean(busy)}
                               onClick={() => requestSecurityReview(selectedTool, selectedVersion)}
                             >
-                              {selectedVersion.scanFindings?.status === 'UNSUPPORTED' ? (
+                              {isScanUnavailable(selectedVersion) ? (
                                 <Info className="h-3.5 w-3.5" />
                               ) : (
                                 <ShieldQuestion className="h-3.5 w-3.5" />
                               )}
-                              {selectedVersion.scanFindings?.status === 'UNSUPPORTED'
+                              {isScanUnavailable(selectedVersion)
                                 ? 'Continue without scan'
                                 : 'Review package findings'}
                             </Button>
