@@ -59,9 +59,13 @@ locals {
     [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")],
     [for f in local.yjs_shared_files : filesha1("${local.yjs_source_path}/../shared/${f}")]
   )))
+  # The OS package epoch is part of the image identity, as in the AgentCore
+  # module. The tag must change too: the task definition runs the image by tag.
+  yjs_build_sha  = var.os_packages_epoch == "" ? local.yjs_files_sha : sha1("${local.yjs_files_sha}:${var.os_packages_epoch}")
+  yjs_build_args = var.os_packages_epoch == "" ? var.docker_build_args : merge(var.docker_build_args, { OS_PACKAGES_EPOCH = var.os_packages_epoch })
   # A pre-built image (var.image_tag) replaces the build below.
   build_image   = var.image_tag == null
-  yjs_image_tag = local.build_image ? substr(local.yjs_files_sha, 0, 16) : var.image_tag
+  yjs_image_tag = local.build_image ? substr(local.yjs_build_sha, 0, 16) : var.image_tag
   # Pre-built images deploy by digest, so a moved tag can't change a revision.
   yjs_image_uri = local.build_image ? module.yjs_docker_build[0].image_uri : "${aws_ecr_repository.yjs_server.repository_url}@${data.aws_ecr_image.yjs_server[0].image_digest}"
 }
@@ -133,10 +137,10 @@ module "yjs_docker_build" {
   # BuildKit session path instead of the provider's legacy tar.gz streaming —
   # see the agents module for rationale.
   builder    = "default"
-  build_args = var.docker_build_args
+  build_args = local.yjs_build_args
 
   triggers = {
-    dir_sha = local.yjs_files_sha
+    dir_sha = local.yjs_build_sha
   }
 }
 

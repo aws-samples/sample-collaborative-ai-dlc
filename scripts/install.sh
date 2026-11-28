@@ -51,6 +51,7 @@ SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
 REAPPLY=0
+REFRESH_OS_PACKAGES=0
 
 usage() {
     cat <<'EOF'
@@ -78,6 +79,9 @@ Options:
   --reapply                    With update, deploy again when the release is
                                unchanged, for example after editing the
                                environment's .tfvars file
+  --refresh-os-packages        With update, deploy again and rebuild the
+                               container images with the distribution's
+                               current OS packages (implies --reapply)
   --yes                        Accept non-secret prompts
 
 Authentication:
@@ -135,6 +139,7 @@ while [[ $# -gt 0 ]]; do
         --include-prereleases|--allow-prerelease) shift ;;
         --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         --reapply) REAPPLY=1; shift ;;
+        --refresh-os-packages) REFRESH_OS_PACKAGES=1; REAPPLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -145,6 +150,10 @@ if [[ "$NO_DOMAIN_EXPLICIT" == 1 && "$DOMAIN_OPTION_EXPLICIT" == 1 ]]; then
 fi
 if [[ -n "$VERSION" && -n "$REF" ]]; then
     echo "--version and --ref are mutually exclusive." >&2
+    exit 2
+fi
+if [[ "$REFRESH_OS_PACKAGES" == 1 && "$COMMAND" != "update" ]]; then
+    echo "--refresh-os-packages is only supported with update." >&2
     exit 2
 fi
 
@@ -860,7 +869,52 @@ tfvars_upsert() {
         sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${escaped_value}|" "$file"
         rm -f "$file.bak"
     else
+        # A last line without a newline would otherwise absorb the assignment.
+        [[ -s "$file" && -n "$(tail -c 1 "$file")" ]] && printf '\n' >> "$file"
         printf '%s = %s\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# Marks a refresh whose deployment has not completed yet, so a retry reuses its
+# epoch instead of rebuilding the images again for a later week.
+OS_PACKAGES_REFRESH_PENDING="$DATA_ROOT/os-packages-refresh.pending"
+
+require_os_packages_epoch_support() {
+    local checkout="$1"
+    grep -q '^variable "os_packages_epoch"' "$checkout/terraform/variables.tf" 2>/dev/null || {
+        echo "The selected release does not support --refresh-os-packages." >&2
+        exit 2
+    }
+}
+
+# Persists the epoch in the environment's tfvars, where both the installer and a
+# direct terraform plan read it. Called only for update --refresh-os-packages.
+refresh_os_packages_epoch() {
+    local tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars" epoch="" started=""
+    local valid_epoch='^[A-Za-z0-9._:-]{1,64}$'
+    if [[ -f "$OS_PACKAGES_REFRESH_PENDING" ]]; then
+        { IFS= read -r epoch; IFS= read -r started; } < "$OS_PACKAGES_REFRESH_PENDING" || true
+        if [[ "$epoch" =~ $valid_epoch ]]; then
+            echo "Resuming the unfinished OS package refresh for epoch $epoch, started ${started:-at an unknown time}."
+            echo "To start a new refresh instead, delete $OS_PACKAGES_REFRESH_PENDING."
+        else
+            echo "Warning: ignoring the invalid OS package refresh marker $OS_PACKAGES_REFRESH_PENDING." >&2
+            epoch=""
+        fi
+    fi
+    if [[ -z "$epoch" ]]; then
+        epoch="$(date -u +%G-W%V)"
+        printf '%s\n%s\n' "$epoch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OS_PACKAGES_REFRESH_PENDING"
+    fi
+    tfvars_upsert "$tfvars" os_packages_epoch "$(hcl_string "$epoch")"
+    local image pinned=""
+    for image in agentcore yjs; do
+        if grep -qE "^[[:space:]]*${image}_image_tag[[:space:]]*=[[:space:]]*\"" "$tfvars"; then
+            pinned="${pinned:+$pinned, }$image"
+        fi
+    done
+    if [[ -n "$pinned" ]]; then
+        echo "Warning: the refresh does not rebuild pinned images ($pinned in $tfvars). Remove their *_image_tag variables from it to refresh them." >&2
     fi
 }
 
@@ -1203,6 +1257,7 @@ update_command() {
     old_commit="$(git -C "$old_checkout" rev-parse HEAD)"
     select_checkout
     checkout="$TARGET_CHECKOUT"
+    [[ "$REFRESH_OS_PACKAGES" == 1 ]] && require_os_packages_epoch_support "$checkout"
     cmp="$(version_cmp "$VERSION" "$old_version")"
     if [[ "$cmp" -lt 0 && "$ALLOW_DOWNGRADE" != 1 ]]; then
         echo "Refusing downgrade from $old_version to $VERSION; pass --allow-downgrade to override." >&2
@@ -1243,6 +1298,7 @@ update_command() {
         confirm "Update AI-DLC from v$old_version to $(target_description)?" || exit 1
     fi
     configure_environment "$checkout"
+    [[ "$REFRESH_OS_PACKAGES" == 1 ]] && refresh_os_packages_epoch
     plan_id="v$old_version-to-v$VERSION"
     [[ -n "$REF" ]] && plan_id="${REF//\//-}-${RESOLVED_COMMIT:0:12}"
     plan="$DATA_ROOT/plans/$plan_id.tfplan"
@@ -1256,6 +1312,8 @@ update_command() {
     fi
     write_config
     switch_current "$checkout"
+    # The tfvars epoch is deployed, so a later refresh starts a new one.
+    rm -f "$OS_PACKAGES_REFRESH_PENDING"
     print_managed_summary "Update from AI-DLC v$old_version" "$checkout"
 }
 

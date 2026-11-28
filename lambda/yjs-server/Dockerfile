@@ -20,6 +20,17 @@ RUN chmod 0755 /app/shared /app/shared/policies /app/yjs-server
 
 WORKDIR /app/yjs-server
 
+# Optional OS package refresh (Terraform os_packages_epoch). A local build
+# cache keeps the upgrade layer above from its first build; a new epoch reruns
+# only this last layer. Without an epoch (CI and pre-built images) the step
+# does nothing.
+ARG OS_PACKAGES_EPOCH=""
+RUN if [ -n "${OS_PACKAGES_EPOCH}" ]; then \
+        echo "Refreshing OS packages for epoch ${OS_PACKAGES_EPOCH}" \
+        && apk upgrade --no-cache; \
+    fi
+LABEL aidlc.os-packages-epoch="${OS_PACKAGES_EPOCH}"
+
 USER node
 
 EXPOSE 1234

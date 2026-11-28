@@ -145,6 +145,65 @@ test('the Neptune instance class is configurable without changing existing insta
   assert.match(neptune, /apply_immediately\s+= var\.neptune_apply_immediately/);
 });
 
+test('the OS package epoch reaches every image build and refreshes only the last layer', () => {
+  for (const path of [
+    'terraform/variables.tf',
+    'terraform/modules/compute/agentcore/variables.tf',
+    'terraform/modules/realtime/yjs-server/variables.tf',
+  ]) {
+    const variable = read(path).match(/variable "os_packages_epoch" \{[\s\S]*?\n\}/)?.[0];
+    assert.ok(variable, `${path} must declare os_packages_epoch`);
+    assert.match(variable, /default\s+= ""\s+nullable\s+= false/);
+    assert.ok(variable.includes('regex("^[A-Za-z0-9._:-]{0,64}$", var.os_packages_epoch)'), path);
+  }
+  const main = read('terraform/main.tf');
+  for (const name of ['agentcore', 'yjs_server']) {
+    assert.match(moduleBlock(main, name), /os_packages_epoch\s+= var\.os_packages_epoch/);
+  }
+  assert.match(
+    read('terraform/outputs.tf'),
+    /output "os_packages_epoch" \{[^}]*value\s+= var\.os_packages_epoch/,
+  );
+  assert.match(
+    read('terraform/outputs.tf'),
+    /output "prebuilt_images" \{[^}]*var\.agentcore_image_tag == null[^}]*var\.yjs_image_tag == null/,
+  );
+  // The module tests override the builds, so only this guards their inputs.
+  for (const [path, name, prefix] of [
+    ['terraform/modules/compute/agentcore/main.tf', 'agentcore_docker_build', 'agentcore'],
+    ['terraform/modules/compute/agentcore/main.tf', 'agentcore_docker_build_amd64', 'agentcore'],
+    ['terraform/modules/realtime/yjs-server/main.tf', 'yjs_docker_build', 'yjs'],
+  ]) {
+    const block = moduleBlock(read(path), name);
+    assert.match(block, new RegExp(`build_args\\s+= local\\.${prefix}_build_args\\n`), name);
+    assert.match(block, new RegExp(`dir_sha = local\\.${prefix}_build_sha\\n`), name);
+  }
+  for (const [path, upgrade] of [
+    ['lambda/agentcore/Dockerfile', 'apt-get upgrade'],
+    ['lambda/yjs-server/Dockerfile', 'apk upgrade'],
+  ]) {
+    const dockerfile = read(path);
+    const runs = dockerfile.split(/^RUN /m).slice(1);
+    const refresh = runs.at(-1);
+    // Last RUN, so a new epoch leaves the tool and dependency layers cached.
+    assert.ok(refresh.includes('${OS_PACKAGES_EPOCH}') && refresh.includes(upgrade), path);
+    // Without an epoch (CI, pre-built images) the layer must not change anything.
+    assert.ok(
+      refresh.startsWith('if [ -n "${OS_PACKAGES_EPOCH}" ]; then'),
+      `${path} must skip the refresh without an epoch`,
+    );
+    assert.ok(
+      dockerfile.search(/^ARG OS_PACKAGES_EPOCH=""$/m) < dockerfile.lastIndexOf('\nRUN '),
+      path,
+    );
+    assert.ok(
+      dockerfile.lastIndexOf('\nRUN ') < dockerfile.search(/^USER /m),
+      `${path} must refresh as root`,
+    );
+    assert.match(dockerfile, /^LABEL aidlc\.os-packages-epoch="\$\{OS_PACKAGES_EPOCH\}"$/m);
+  }
+});
+
 test('root KMS configuration accepts existing keys without owning their lifecycle', () => {
   const rootVariables = read('terraform/variables.tf');
   assert.doesNotMatch(rootVariables, /variable "kms_mode"/);

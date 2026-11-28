@@ -77,3 +77,78 @@ run "uses_prebuilt_image" {
     error_message = "The image tag output must report the supplied tag."
   }
 }
+
+run "os_packages_epoch_rebuilds_image" {
+  command = plan
+  module { source = "./modules/compute/agentcore" }
+  override_module {
+    target  = module.agentcore_docker_build
+    outputs = { image_uri = "example.test/agentcore:test" }
+  }
+  override_module {
+    target  = module.agentcore_docker_build_amd64
+    outputs = { image_uri = "example.test/agentcore:test-amd64" }
+  }
+  variables {
+    os_packages_epoch = "2026-W48"
+    docker_build_args = { HTTP_PROXY = "http://proxy.example.com:8080" }
+  }
+  assert {
+    condition     = output.image_tag != run.builds_image_by_default.image_tag && output.image_tag == substr(local.agentcore_build_sha, 0, 16)
+    error_message = "A new OS package epoch must give the image a new tag and rebuild trigger."
+  }
+  assert {
+    condition     = local.agentcore_build_sha != local.agentcore_files_sha
+    error_message = "The rebuild trigger must change with the OS package epoch."
+  }
+  assert {
+    condition     = nonsensitive(local.agentcore_build_args) == tomap({ HTTP_PROXY = "http://proxy.example.com:8080", OS_PACKAGES_EPOCH = "2026-W48" })
+    error_message = "Both builds must receive the epoch as OS_PACKAGES_EPOCH next to the configured build arguments."
+  }
+}
+
+run "same_os_packages_epoch_keeps_image" {
+  command = plan
+  module { source = "./modules/compute/agentcore" }
+  override_module {
+    target  = module.agentcore_docker_build
+    outputs = { image_uri = "example.test/agentcore:test" }
+  }
+  override_module {
+    target  = module.agentcore_docker_build_amd64
+    outputs = { image_uri = "example.test/agentcore:test-amd64" }
+  }
+  variables { os_packages_epoch = "2026-W48" }
+  assert {
+    condition     = output.image_tag == run.os_packages_epoch_rebuilds_image.image_tag
+    error_message = "The same epoch and sources must keep the image tag, so a second deploy does not rebuild."
+  }
+}
+
+run "empty_os_packages_epoch_keeps_source_hash" {
+  command = plan
+  module { source = "./modules/compute/agentcore" }
+  override_module {
+    target  = module.agentcore_docker_build
+    outputs = { image_uri = "example.test/agentcore:test" }
+  }
+  override_module {
+    target  = module.agentcore_docker_build_amd64
+    outputs = { image_uri = "example.test/agentcore:test-amd64" }
+  }
+  assert {
+    condition     = local.agentcore_build_sha == local.agentcore_files_sha && output.image_tag == substr(local.agentcore_files_sha, 0, 16)
+    error_message = "Without an epoch the tag and trigger must stay the source hash, so existing deployments do not rebuild."
+  }
+  assert {
+    condition     = !contains(keys(nonsensitive(local.agentcore_build_args)), "OS_PACKAGES_EPOCH")
+    error_message = "Without an epoch the build arguments must stay unchanged."
+  }
+}
+
+run "rejects_an_invalid_os_packages_epoch" {
+  command = plan
+  module { source = "./modules/compute/agentcore" }
+  variables { os_packages_epoch = "2026 W48; rm -rf /" }
+  expect_failures = [var.os_packages_epoch]
+}

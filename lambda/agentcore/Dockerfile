@@ -146,6 +146,20 @@ COPY --chown=node:node shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
+# Optional OS package refresh (Terraform os_packages_epoch). A local build
+# cache keeps the upgrade layer above from its first build; a new epoch reruns
+# only this last layer, so the tool and dependency layers stay cached. Without
+# an epoch (CI and pre-built images) the step does nothing.
+ARG OS_PACKAGES_EPOCH=""
+RUN if [ -n "${OS_PACKAGES_EPOCH}" ]; then \
+        echo "Refreshing OS packages for epoch ${OS_PACKAGES_EPOCH}" \
+        && apt-get update \
+        && apt-get upgrade -y --no-install-recommends \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+LABEL aidlc.os-packages-epoch="${OS_PACKAGES_EPOCH}"
+
 WORKDIR /mnt/workspace
 USER node
 # CLI conversation-store placement (for park/resume durability):

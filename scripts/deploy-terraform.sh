@@ -108,6 +108,39 @@ tfvar_string() {
     printf '%s' "$value"
 }
 
+# Reports which os_packages_epoch the plan uses. Terraform gives --var
+# precedence over the tfvars files, and both over TF_VAR_os_packages_epoch.
+report_os_packages_epoch() {
+    local value="" source="default" arg current_week deployed
+    for arg in ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"}; do
+        if [[ "$arg" == os_packages_epoch=* ]]; then
+            value="${arg#os_packages_epoch=}"
+            source="--var"
+        fi
+    done
+    if [[ "$source" == "default" ]] && grep -qE '^[[:space:]]*os_packages_epoch[[:space:]]*=' "$TFVARS_FILE"; then
+        value="$(tfvar_string os_packages_epoch "$TFVARS_FILE")"
+        source="$TFVARS_FILE"
+    elif [[ "$source" == "default" && -n "${TF_VAR_os_packages_epoch+x}" ]]; then
+        value="$TF_VAR_os_packages_epoch"
+        source="TF_VAR_os_packages_epoch"
+    fi
+    echo "OS package epoch: ${value:-none} ($source)"
+
+    current_week="$(date -u +%G-W%V)"
+    if [[ "$source" != "--var" && "$value" =~ ^[0-9]{4}-W[0-9]{2}$ && "$value" < "$current_week" ]]; then
+        echo "Note: the images' OS packages were last refreshed in $value. To refresh them, run the installer's update --refresh-os-packages, or pass --var os_packages_epoch=$current_week." >&2
+    fi
+
+    # States from releases without the output have no deployed epoch to keep.
+    deployed="$(tf_output os_packages_epoch)"
+    if [[ -z "$value" && -n "$deployed" ]]; then
+        echo "WARNING: the deployed images were built with OS package epoch $deployed, but this plan has none." >&2
+        echo "WARNING: applying it rebuilds both images under their source-hash tags. Every operator must use the same" >&2
+        echo "WARNING: tfvars file: add os_packages_epoch = \"$deployed\" to $TFVARS_FILE, or pass --var os_packages_epoch=$deployed." >&2
+    fi
+}
+
 inspect_plan() {
     local plan_file="$1"
     local plan_json="${plan_file}.json"
@@ -121,8 +154,28 @@ tf_output() {
     terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true
 }
 
+# Images deployed from a pinned tag, which the OS package epoch does not rebuild.
+prebuilt_images() {
+    terraform -chdir="$TF_DIR" output -json prebuilt_images 2>/dev/null | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        try { process.stdout.write(JSON.parse(s).join(", ")); } catch {}
+      });
+    ' || true
+}
+
+# The installer prints its own summary, which has no OS packages line.
+warn_pinned_images() {
+    local os_packages_epoch prebuilt
+    os_packages_epoch="$(tf_output os_packages_epoch)"
+    [[ -n "$os_packages_epoch" ]] || return 0
+    prebuilt="$(prebuilt_images)"
+    [[ -n "$prebuilt" ]] || return 0
+    echo "WARNING: OS package epoch $os_packages_epoch is configured, but pinned images are not rebuilt ($prebuilt). Remove their *_image_tag variables from $TFVARS_FILE to refresh them." >&2
+}
+
 print_deployment_summary() {
-    local application_url region deployed_environment custom_domain aliases auth_mode providers lambda_vpc_scope nat_ips
+    local application_url region deployed_environment custom_domain aliases auth_mode providers lambda_vpc_scope nat_ips os_packages_epoch prebuilt
     local oidc_callback saml_acs saml_entity_id
     application_url="$(tf_output application_url)"
     region="$(tf_output aws_region)"
@@ -146,6 +199,15 @@ print_deployment_summary() {
         print_dns_instructions "$aliases"
     fi
     printf '  Authentication:  %s\n' "${auth_mode:-local}"
+    os_packages_epoch="$(tf_output os_packages_epoch)"
+    if [[ -n "$os_packages_epoch" ]]; then
+        prebuilt="$(prebuilt_images)"
+        if [[ -z "$prebuilt" ]]; then
+            printf '  OS packages:     refreshed for epoch %s\n' "$os_packages_epoch"
+        else
+            printf '  OS packages:     epoch %s configured; pinned images are not rebuilt (%s)\n' "$os_packages_epoch" "$prebuilt"
+        fi
+    fi
     if [[ "$auth_mode" != "local" ]]; then
         providers="$(terraform -chdir="$TF_DIR" output -json sso_providers 2>/dev/null || printf '[]')"
         printf '  SSO providers:   %s\n' "$(printf '%s' "$providers" | node -e '
@@ -310,6 +372,7 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
 
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."
+    report_os_packages_epoch
     TF_VAR_FILE_ARGS=(-var-file="$TFVARS_FILE")
     [[ -f "$SSO_TFVARS_FILE" ]] && TF_VAR_FILE_ARGS+=(-var-file="$SSO_TFVARS_FILE")
     terraform plan "${TF_VAR_FILE_ARGS[@]}" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
@@ -396,4 +459,6 @@ fi
 
 if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
     print_deployment_summary
+else
+    warn_pinned_images
 fi

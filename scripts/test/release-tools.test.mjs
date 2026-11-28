@@ -2711,6 +2711,174 @@ test('installer deploys an unchanged release again only with --reapply', () => {
   assert.match(reappliedRef.stdout, /Update from AI-DLC v2\.0\.0 complete/);
 });
 
+// Answers only the ISO week format the scripts must use (%G-W%V, not
+// %Y-W%U), with a fixed week; other date calls go to the real date.
+const stubIsoWeek = (bin) =>
+  writeFileSync(
+    join(bin, 'date'),
+    [
+      '#!/usr/bin/env bash',
+      'if [[ "$*" == "-u +%G-W%V" ]]; then printf "%s\\n" "$AIDLC_FAKE_ISO_WEEK"; exit 0; fi',
+      '[[ "$*" == *%V* || "$*" == *%U* || "$*" == *%W* ]] && exit 98',
+      'exec /bin/date "$@"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+test('installer refreshes OS packages only on request and persists the epoch', () => {
+  const repository = createReleaseRepository();
+  writeFileSync(
+    join(repository, 'scripts/deploy-terraform.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'tfvars="$AIDLC_CONFIG_DIR/environments/$1.tfvars"',
+      'epoch="$(sed -nE \'s/^os_packages_epoch = "(.*)"$/\\1/p\' "$tfvars")"',
+      'printf "%s %s\\n" "$3" "${epoch:-none}" >> "$AIDLC_DEPLOY_LOG"',
+      '[[ "$3" == "${AIDLC_FAIL_PHASE:-}" ]] && exit 42',
+      'exit 0',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(repository, 'terraform/variables.tf'),
+    'variable "os_packages_epoch" {\n  type    = string\n  default = ""\n}\n',
+  );
+  writeJson(join(repository, 'package.json'), { name: 'aidlc', version: '2.2.0', private: true });
+  execFileSync('git', ['add', '.'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'v2.2'], { cwd: repository });
+  execFileSync('git', ['tag', 'v2.2.0'], { cwd: repository });
+
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-os-refresh-'));
+  const base = mockedCommandEnv(dir, repository);
+  stubIsoWeek(join(dir, 'bin'));
+  const env = {
+    ...base,
+    AIDLC_DEPLOY_LOG: join(dir, 'deploy.log'),
+    AIDLC_FAKE_ISO_WEEK: '2026-W53',
+  };
+  const tfvars = join(
+    env.XDG_CONFIG_HOME,
+    'collaborative-ai-dlc/terraform/environments/dev.tfvars',
+  );
+  const pending = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/os-packages-refresh.pending');
+  const deployments = () => readFileSync(env.AIDLC_DEPLOY_LOG, 'utf8').trim().split('\n');
+  const update = (args, extra = {}) =>
+    run('bash', [installer, 'update', ...args], { env: { ...env, ...extra } });
+
+  const installed = run('bash', [installer, 'install'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.deepEqual(deployments(), ['plan none', 'apply none']);
+
+  // A plain update of an unchanged release stays a no-op and sets no epoch.
+  const unchanged = update([]);
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.match(unchanged.stdout, /Already on AI-DLC v2\.2\.0\./);
+  assert.doesNotMatch(readFileSync(tfvars, 'utf8'), /os_packages_epoch/);
+
+  const refreshed = update(['--refresh-os-packages']);
+  assert.equal(refreshed.status, 0, refreshed.stderr);
+  assert.match(refreshed.stdout, /Update from AI-DLC v2\.2\.0 complete/);
+  assert.deepEqual(deployments().slice(2), ['plan 2026-W53', 'apply 2026-W53']);
+  assert.match(readFileSync(tfvars, 'utf8'), /^os_packages_epoch = "2026-W53"$/m);
+  assert.equal(existsSync(pending), false);
+
+  // The same week keeps the same epoch, so the images are not built again.
+  const sameWeek = update(['--refresh-os-packages']);
+  assert.equal(sameWeek.status, 0, sameWeek.stderr);
+  assert.deepEqual(deployments().slice(4), ['plan 2026-W53', 'apply 2026-W53']);
+
+  // A plain reapply in a later week deploys the persisted epoch untouched.
+  const reapplied = update(['--reapply'], { AIDLC_FAKE_ISO_WEEK: '2027-W01' });
+  assert.equal(reapplied.status, 0, reapplied.stderr);
+  assert.deepEqual(deployments().slice(6), ['plan 2026-W53', 'apply 2026-W53']);
+
+  // A failed refresh is retried with its own epoch after the week changes.
+  const failed = update(['--refresh-os-packages'], {
+    AIDLC_FAKE_ISO_WEEK: '2027-W01',
+    AIDLC_FAIL_PHASE: 'apply',
+  });
+  assert.notEqual(failed.status, 0);
+  assert.match(readFileSync(pending, 'utf8'), /^2027-W01\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$/);
+  const retried = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W02' });
+  assert.equal(retried.status, 0, retried.stderr);
+  assert.match(
+    retried.stdout,
+    /Resuming the unfinished OS package refresh for epoch 2027-W01, started \d{4}-/,
+  );
+  assert.ok(retried.stdout.includes(`delete ${pending}`), retried.stdout);
+  assert.deepEqual(deployments().slice(8), [
+    'plan 2027-W01',
+    'apply 2027-W01',
+    'plan 2027-W01',
+    'apply 2027-W01',
+  ]);
+  assert.equal(existsSync(pending), false);
+
+  // A corrupted marker is discarded instead of reaching the tfvars file.
+  writeFileSync(pending, 'not a valid epoch; rm -rf /\n');
+  const invalid = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W03' });
+  assert.equal(invalid.status, 0, invalid.stderr);
+  assert.match(invalid.stderr, /ignoring the invalid OS package refresh marker/);
+  assert.deepEqual(deployments().slice(-2), ['plan 2027-W03', 'apply 2027-W03']);
+  assert.doesNotMatch(invalid.stderr, /pinned images/);
+
+  // Pinned tags are not rebuilt, so the refresh says so before deploying.
+  writeFileSync(
+    tfvars,
+    `${readFileSync(tfvars, 'utf8')}agentcore_image_tag = "1.2.3"\nyjs_image_tag = null\n`,
+  );
+  const pinned = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W04' });
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.ok(
+    pinned.stderr.includes(`does not rebuild pinned images (agentcore in ${tfvars})`),
+    pinned.stderr,
+  );
+});
+
+test('tfvars_upsert appends on a new line when the file lacks a final newline', () => {
+  const upsert = readFileSync(installer, 'utf8').match(/^tfvars_upsert\(\) \{[\s\S]*?^\}$/m)?.[0];
+  assert.ok(upsert, 'tfvars_upsert must be a function in install.sh');
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-upsert-'));
+  const file = join(dir, 'dev.tfvars');
+  for (const [initial, expected] of [
+    ['region = "a"', 'region = "a"\nos_packages_epoch = "2026-W48"\n'],
+    ['region = "a"\n', 'region = "a"\nos_packages_epoch = "2026-W48"\n'],
+    ['', 'os_packages_epoch = "2026-W48"\n'],
+  ]) {
+    writeFileSync(file, initial);
+    const result = run('bash', [
+      '-c',
+      `${upsert}\ntfvars_upsert "$1" os_packages_epoch '"2026-W48"'`,
+      'upsert',
+      file,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(file, 'utf8'), expected);
+  }
+});
+
+test('installer refuses an OS package refresh the release cannot apply', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-os-refresh-old-'));
+  const env = { ...managedEnv(dir, repository), AIDLC_FAKE_ISO_WEEK: '2026-W48' };
+  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  const refused = run(
+    'bash',
+    [installer, 'update', '--version', '2.0.0', '--refresh-os-packages'],
+    {
+      env,
+    },
+  );
+  assert.equal(refused.status, 2, refused.stderr);
+  assert.match(refused.stderr, /does not support --refresh-os-packages/);
+  const onInstall = run('bash', [installer, 'install', '--refresh-os-packages'], { env });
+  assert.equal(onInstall.status, 2);
+  assert.match(onInstall.stderr, /only supported with update/);
+});
+
 test('installer carries the custom domain across an update and can remove it', () => {
   const repository = createReleaseRepository();
   writeJson(join(repository, 'package.json'), { name: 'aidlc', version: '2.2.0', private: true });

@@ -237,6 +237,18 @@ variable "docker_build_args" {
   sensitive   = true
 }
 
+variable "os_packages_epoch" {
+  description = "Set to a new value to rebuild the AgentCore and Yjs images built during apply with the distribution's current OS packages, which a local build cache would otherwise keep from the first build. Empty (the default) rebuilds them only when their sources change. The installer's update --refresh-os-packages writes the current UTC ISO week, for example 2026-W48."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._:-]{0,64}$", var.os_packages_epoch))
+    error_message = "os_packages_epoch must be at most 64 letters, digits, dots, underscores, colons or hyphens."
+  }
+}
+
 variable "agentcore_image_tag" {
   description = "Tag of a pre-built AgentCore image in its ECR repository (plus <tag>-amd64 when enable_instances_compute is true), built outside OpenTofu. Null builds it during apply."
   type        = string

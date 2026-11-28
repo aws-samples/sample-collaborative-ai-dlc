@@ -83,7 +83,9 @@ const deploymentFixture = (t) => {
     ECR_TEST_LOG: join(directory, 'auth-events'),
     EVENTS: join(directory, 'events'),
     PLAN_JSON: join(directory, 'plan.json'),
+    PLAN_EPOCH: join(directory, 'plan-epoch'),
   };
+  delete env.TF_VAR_os_packages_epoch;
   delete env.TF_RECREATE_MISSING_LAMBDA_PACKAGE;
   delete env.AIDLC_SKIP_NPM_CI;
   delete env.AIDLC_PUBLIC_ECR_AUTH_WRAPPED;
@@ -115,12 +117,19 @@ if (args[0].startsWith('-chdir=')) process.chdir(args.shift().slice(7));
 const command = args[0];
 assert.equal(process.cwd(), ${JSON.stringify(join(directory, 'terraform'))});
 if (command === 'output') {
+  // The plan compares with the deployed epoch; older states lack the output.
+  if (args.at(-1) === 'os_packages_epoch' && !fs.existsSync(${JSON.stringify(join(directory, 'applied'))})) {
+    if (!process.env.FAKE_DEPLOYED_EPOCH) process.exit(1);
+    process.stdout.write(process.env.FAKE_DEPLOYED_EPOCH);
+    process.exit(0);
+  }
   assert.ok(fs.existsSync(${JSON.stringify(join(directory, 'applied'))}));
   const outputs = { environment: 'prod', aws_region: 'eu-central-1',
     user_pool_id: 'test-pool', user_pool_client_id: 'test-client', auth_mode: 'local',
     application_url: 'https://test.example.invalid', application_domain: 'test.example.invalid',
     s3_bucket_name: 'test-frontend', cloudfront_distribution_id: 'test-distribution',
-    v2_executions_table_name: 'test-inventory', seed_blocks_lambda_name: 'test-seed', sso_providers: '[]' };
+    v2_executions_table_name: 'test-inventory', seed_blocks_lambda_name: 'test-seed', sso_providers: '[]',
+    os_packages_epoch: process.env.FAKE_EPOCH_OUTPUT || '', prebuilt_images: process.env.FAKE_PREBUILT || '[]' };
   process.stdout.write(outputs[args.at(-1)] || '');
   process.exit(0);
 }
@@ -134,6 +143,7 @@ if (command === 'init') assert.ok(args.includes('-backend-config=' + process.env
 else if (command === 'plan') {
   assert.ok(args.includes('-var-file=' + process.env.AIDLC_CONFIG_DIR + '/environments/prod.tfvars'));
   assert.ok(args.includes('-out=' + process.env.AIDLC_PLAN_FILE));
+  fs.writeFileSync(process.env.PLAN_EPOCH, process.env.TF_VAR_os_packages_epoch ?? '<unset>');
   fs.writeFileSync(process.env.AIDLC_PLAN_FILE, 'saved plan');
 } else if (command === 'show') {
   assert.deepEqual(args.slice(1), ['-json', process.env.AIDLC_PLAN_FILE]);
@@ -187,6 +197,15 @@ case "$1 $2" in
 esac
 `,
   );
+  // Answers only the ISO week format (%G-W%V); other date calls pass through.
+  write(
+    join(directory, 'bin/date'),
+    `#!/bin/bash
+if [[ "$*" == "-u +%G-W%V" ]]; then echo "\${FAKE_ISO_WEEK:-2026-W48}"; exit 0; fi
+[[ "$*" == *%V* || "$*" == *%U* || "$*" == *%W* ]] && exit 98
+exec /bin/date "$@"
+`,
+  );
   stubPublicEcr(join(directory, 'bin'));
   return { directory, env };
 };
@@ -231,6 +250,114 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
       .filter((line) => line === 'login').length,
     1,
   );
+});
+
+const tfvarsPath = (fixture) => join(fixture.directory, 'config/environments/prod.tfvars');
+
+test('without an epoch the plan keeps rebuilding images only on source changes', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(fixture.env.PLAN_EPOCH, 'utf8'), '<unset>');
+  assert.match(result.stdout, /OS package epoch: none \(default\)/);
+  assert.doesNotMatch(result.stdout, /OS packages:/);
+});
+
+test('an exported empty epoch is reported as its source', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, { TF_VAR_os_packages_epoch: '' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(fixture.env.PLAN_EPOCH, 'utf8'), '');
+  assert.match(result.stdout, /OS package epoch: none \(TF_VAR_os_packages_epoch\)/);
+});
+
+test('a tfvars epoch takes precedence over TF_VAR and notes an older week', (t) => {
+  const fixture = deploymentFixture(t);
+  writeFileSync(
+    tfvarsPath(fixture),
+    `${readFileSync(tfvarsPath(fixture), 'utf8')}os_packages_epoch = "2026-W40"\n`,
+  );
+  const result = deploy(fixture, {
+    TF_VAR_os_packages_epoch: '2026-W48',
+    FAKE_ISO_WEEK: '2026-W48',
+    FAKE_EPOCH_OUTPUT: '2026-W40',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(
+    result.stdout.includes(`OS package epoch: 2026-W40 (${tfvarsPath(fixture)})`),
+    result.stdout,
+  );
+  assert.match(result.stderr, /last refreshed in 2026-W40\..*--var os_packages_epoch=2026-W48/);
+  assert.match(result.stdout, /OS packages: +refreshed for epoch 2026-W40/);
+});
+
+test('a tfvars epoch of the current ISO week prints no note', (t) => {
+  const fixture = deploymentFixture(t);
+  writeFileSync(
+    tfvarsPath(fixture),
+    `${readFileSync(tfvarsPath(fixture), 'utf8')}os_packages_epoch = "2026-W53"\n`,
+  );
+  const result = deploy(fixture, { FAKE_ISO_WEEK: '2026-W53' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /last refreshed/);
+});
+
+test('a plan without the deployed epoch warns before rebuilding over it', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, { FAKE_DEPLOYED_EPOCH: '2026-W48' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stderr,
+    /WARNING: the deployed images were built with OS package epoch 2026-W48/,
+  );
+  assert.match(result.stderr, /add os_packages_epoch = "2026-W48" to /);
+});
+
+test('a plan that keeps the deployed epoch does not warn', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, {
+    FAKE_DEPLOYED_EPOCH: '2026-W48',
+    TF_VAR_os_packages_epoch: '2026-W48',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /WARNING: the deployed images/);
+});
+
+test('the summary says when pinned images ignore the epoch', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture, { FAKE_EPOCH_OUTPUT: '2026-W48', FAKE_PREBUILT: '["agentcore"]' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /OS packages: +epoch 2026-W48 configured; pinned images are not rebuilt \(agentcore\)/,
+  );
+  assert.doesNotMatch(result.stdout, /refreshed for epoch/);
+});
+
+test('a managed install warns when pinned images ignore the epoch', (t) => {
+  const managed = { AIDLC_MANAGED_INSTALL: '1', FAKE_EPOCH_OUTPUT: '2026-W48' };
+  const pinned = deploy(deploymentFixture(t), { ...managed, FAKE_PREBUILT: '["agentcore","yjs"]' });
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.doesNotMatch(pinned.stdout, /OS packages:/);
+  assert.match(
+    pinned.stderr,
+    /WARNING: OS package epoch 2026-W48 is configured, but pinned images are not rebuilt \(agentcore, yjs\)/,
+  );
+
+  const rebuilt = deploy(deploymentFixture(t), managed);
+  assert.equal(rebuilt.status, 0, rebuilt.stderr);
+  assert.doesNotMatch(rebuilt.stderr, /pinned images/);
+
+  const single = deploy(deploymentFixture(t), { ...managed, FAKE_PREBUILT: '["yjs"]' });
+  assert.match(single.stderr, /pinned images are not rebuilt \(yjs\)/);
+
+  // Without an epoch, pinning is the usual pre-built deployment: nothing to say.
+  const noEpoch = deploy(deploymentFixture(t), {
+    AIDLC_MANAGED_INSTALL: '1',
+    FAKE_PREBUILT: '["agentcore","yjs"]',
+  });
+  assert.equal(noEpoch.status, 0, noEpoch.stderr);
+  assert.doesNotMatch(noEpoch.stderr, /pinned images/);
 });
 
 test('plan/apply/preparation failures stop deployment before frontend publication', (t) => {
