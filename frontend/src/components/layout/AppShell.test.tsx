@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
-import { Link, MemoryRouter, Routes, Route, useNavigate } from 'react-router';
+import { Link, MemoryRouter, Routes, Route, useLocation, useNavigate } from 'react-router';
 
 import {
   ACTIVITY_PANEL_OPEN_STORAGE_KEY,
@@ -95,22 +95,40 @@ describe('shouldActivityPanelDefaultOpen', () => {
     expect(shouldActivityPanelDefaultOpen({ width: 390, persisted: true, route })).toBe(false);
     expect(shouldActivityPanelDefaultOpen({ width: 1023, persisted: null, route })).toBe(false);
     expect(
-      shouldActivityPanelDefaultOpen({ width: 768, persisted: true, route: '/space/p1/sprint/s1' }),
+      shouldActivityPanelDefaultOpen({
+        width: 768,
+        persisted: true,
+        route: '/space/p1/sprint/s1',
+      }),
     ).toBe(false);
   });
 
   it('follows the route default at 1024px and above when nothing is persisted', () => {
     expect(shouldActivityPanelDefaultOpen({ width: 1024, persisted: null, route })).toBe(true);
-    expect(shouldActivityPanelDefaultOpen({ width: 1440, persisted: undefined, route })).toBe(true);
     expect(
-      shouldActivityPanelDefaultOpen({ width: 1440, persisted: null, route: `${route}/graph` }),
+      shouldActivityPanelDefaultOpen({
+        width: 1440,
+        persisted: undefined,
+        route,
+      }),
+    ).toBe(true);
+    expect(
+      shouldActivityPanelDefaultOpen({
+        width: 1440,
+        persisted: null,
+        route: `${route}/graph`,
+      }),
     ).toBe(false);
   });
 
   it('lets the persisted desktop preference override the route default', () => {
     expect(shouldActivityPanelDefaultOpen({ width: 1440, persisted: false, route })).toBe(false);
     expect(
-      shouldActivityPanelDefaultOpen({ width: 1440, persisted: true, route: `${route}/graph` }),
+      shouldActivityPanelDefaultOpen({
+        width: 1440,
+        persisted: true,
+        route: `${route}/graph`,
+      }),
     ).toBe(true);
   });
 });
@@ -122,8 +140,14 @@ describe('shouldActivityPanelDefaultOpen', () => {
 vi.mock('@/components/layout/AppSidebar', async () => {
   const router = await import('react-router');
   return {
-    AppSidebar: ({ onCreateSpace }: { onCreateSpace?: () => void }) => (
-      <nav data-testid="sidebar">
+    AppSidebar: ({
+      onCreateSpace,
+      variant = 'inline',
+    }: {
+      onCreateSpace?: () => void;
+      variant?: 'inline' | 'drawer';
+    }) => (
+      <nav data-testid="sidebar" data-variant={variant}>
         <button type="button" onClick={onCreateSpace}>
           New space
         </button>
@@ -135,8 +159,21 @@ vi.mock('@/components/layout/AppSidebar', async () => {
   };
 });
 vi.mock('@/components/CreateProjectModal', () => ({
-  CreateProjectModal: ({ onClose }: { onClose: () => void }) => (
-    <div role="dialog" aria-label="Create space">
+  CreateProjectModal: ({
+    onClose,
+    initialProvider = '',
+    initialInstance,
+  }: {
+    onClose: () => void;
+    initialProvider?: string;
+    initialInstance?: string;
+  }) => (
+    <div
+      role="dialog"
+      aria-label="Create space"
+      data-provider={initialProvider}
+      data-instance={initialInstance}
+    >
       <button type="button" onClick={onClose}>
         Cancel
       </button>
@@ -223,12 +260,27 @@ vi.mock('@/hooks/useResizablePanel', () => ({
 }));
 
 import { AppShell } from './AppShell';
+import { useOpenCreateSpace } from './createSpaceDialog';
+
+function CurrentLocation() {
+  const { pathname, search } = useLocation();
+  return <span data-testid="current-location">{pathname + search}</span>;
+}
 
 function HistoryBackButton() {
   const navigate = useNavigate();
   return (
     <button data-testid="go-back" onClick={() => navigate(-1)}>
       Back
+    </button>
+  );
+}
+
+function CreateSpaceOpener() {
+  const openCreateSpace = useOpenCreateSpace();
+  return (
+    <button type="button" onClick={openCreateSpace}>
+      Start a space
     </button>
   );
 }
@@ -269,9 +321,12 @@ function renderAtRoute(path: string) {
               <>
                 <div>dashboard</div>
                 <HistoryBackButton />
+                <CurrentLocation />
               </>
             }
           />
+          <Route path="/spaces" element={<CurrentLocation />} />
+          <Route path="/opener" element={<CreateSpaceOpener />} />
           <Route path="*" element={<div>page</div>} />
         </Route>
       </Routes>
@@ -376,6 +431,49 @@ describe('AppShell Create space dialog (R3-8)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Create space' })).toBeNull();
   });
+
+  it('opens its dialog for a page that asks through useOpenCreateSpace, across layout changes', async () => {
+    renderAtRoute('/opener');
+    await userEvent.click(screen.getByRole('button', { name: 'Start a space' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create space' });
+    setPanelsInline(false);
+    setPanelsInline(true);
+    expect(screen.getByRole('dialog', { name: 'Create space' })).toBe(dialog);
+  });
+
+  it('opens the dialog from ?reopenCreateSpace=1 on the page the reader lands on and clears the flag', async () => {
+    renderAtRoute('/dashboard?reopenCreateSpace=1&gitProvider=gitlab&tab=x');
+    const dialog = await screen.findByRole('dialog', { name: 'Create space' });
+    expect(dialog).toHaveAttribute('data-provider', 'gitlab');
+    await waitFor(() =>
+      expect(screen.getByTestId('current-location')).toHaveTextContent('/dashboard?tab=x'),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Create space' })).toBeNull();
+  });
+
+  it('reopens on the self-managed GitLab instance the connection returned from', async () => {
+    renderAtRoute(
+      '/dashboard?reopenCreateSpace=1&gitProvider=gitlab&gitlabInstance=git.example.org',
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Create space' });
+    expect(dialog).toHaveAttribute('data-instance', 'git.example.org');
+    await waitFor(() =>
+      expect(screen.getByTestId('current-location')).toHaveTextContent(/^\/dashboard$/),
+    );
+  });
+
+  it.each([true, false])(
+    'opens the dialog on /spaces whatever the layout (inline: %s)',
+    async (inline) => {
+      setViewport(inline);
+      renderAtRoute('/spaces?reopenCreateSpace=1');
+      expect(await screen.findByRole('dialog', { name: 'Create space' })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByTestId('current-location')).toHaveTextContent(/^\/spaces$/),
+      );
+    },
+  );
 });
 
 describe('AppShell panel default behavior', () => {
@@ -450,7 +548,9 @@ describe('AppShell panel default behavior', () => {
     const preview = screen.getByTestId('open-preview');
     await user.click(preview);
 
-    const close = await screen.findByRole('button', { name: 'Close activity panel' });
+    const close = await screen.findByRole('button', {
+      name: 'Close activity panel',
+    });
     await waitFor(() => expect(close).toHaveFocus());
 
     await user.click(close);
@@ -555,13 +655,15 @@ describe('AppShell panel default behavior', () => {
     const user = userEvent.setup();
     renderAtRoute('/space/p1/intent/i1');
 
-    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    // Inline column: the full sidebar with the space list.
+    expect(screen.getByTestId('sidebar')).toHaveAttribute('data-variant', 'inline');
     setPanelsInline(false);
     await waitFor(() => expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument());
     expect(screen.getByTestId('toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
 
     await user.click(screen.getByTestId('toggle-sidebar'));
-    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    // Narrow drawer: My work, Spaces and intents only (no space list).
+    expect(screen.getByTestId('sidebar')).toHaveAttribute('data-variant', 'drawer');
     expect(screen.getByLabelText('Main navigation')).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
@@ -614,16 +716,21 @@ describe('AppShell keyboard access', () => {
     renderAtRoute('/space/p1/intent/i1');
     await screen.findByTestId('intent-activity-panel');
 
-    const sidebarHandle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    const sidebarHandle = screen.getByRole('separator', {
+      name: 'Resize sidebar',
+    });
     expect(sidebarHandle).toHaveAttribute('aria-orientation', 'vertical');
     expect(sidebarHandle).toHaveAttribute('aria-controls', 'app-sidebar');
     expect(sidebarHandle).toHaveAttribute('aria-valuenow', '380');
     expect(sidebarHandle).toHaveAttribute('aria-valuemin', '200');
-    expect(sidebarHandle).toHaveAttribute('aria-valuemax', '420');
+    // The reachable maximum (420 px capped to 30 vw), not the configured one.
+    expect(sidebarHandle).toHaveAttribute('aria-valuemax', '540');
     expect(sidebarHandle).toHaveAttribute('aria-valuetext', '380 pixels');
     expect(sidebarHandle.className).toMatch(/focus-visible:ring-2/);
 
-    const activityHandle = screen.getByRole('separator', { name: 'Resize activity panel' });
+    const activityHandle = screen.getByRole('separator', {
+      name: 'Resize activity panel',
+    });
     expect(activityHandle).toHaveAttribute('aria-controls', 'activity-panel');
     expect(activityHandle).toHaveAttribute('aria-valuenow', '380');
     expect(activityHandle).toHaveAttribute('aria-valuemin', '300');

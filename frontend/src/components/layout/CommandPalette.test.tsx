@@ -44,15 +44,21 @@ function CurrentPath() {
 
 function renderPalette() {
   const onOpenChange = vi.fn();
+  const onCreateSpace = vi.fn();
   render(
     <MemoryRouter initialEntries={['/dashboard']}>
       <CurrentPath />
       <Routes>
-        <Route path="*" element={<CommandPalette open onOpenChange={onOpenChange} />} />
+        <Route
+          path="*"
+          element={
+            <CommandPalette open onOpenChange={onOpenChange} onCreateSpace={onCreateSpace} />
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );
-  return { onOpenChange };
+  return { onOpenChange, onCreateSpace };
 }
 
 function typeSearch(text: string) {
@@ -76,7 +82,12 @@ beforeEach(() => {
   };
   mockProjects.projects = [
     {
-      project: { id: 'retail', name: 'retail-v2', kind: 'v2', createdAt: '2024-01-01' },
+      project: {
+        id: 'retail',
+        name: 'retail-v2',
+        kind: 'v2',
+        createdAt: '2024-01-01',
+      },
       latestSprint: null,
       latestIntent: null,
       intents: [
@@ -119,7 +130,12 @@ beforeEach(() => {
       activity: { inProgress: 0, attention: 0 },
     },
     {
-      project: { id: 'cartel', name: 'cart-analytics', kind: 'v2', createdAt: '2024-01-01' },
+      project: {
+        id: 'cartel',
+        name: 'cart-analytics',
+        kind: 'v2',
+        createdAt: '2024-01-01',
+      },
       latestSprint: null,
       latestIntent: null,
       intents: [],
@@ -137,7 +153,9 @@ describe('CommandPalette intents', () => {
   it('lists a matching intent with its space and status, and opens its entry page', () => {
     const { onOpenChange } = renderPalette();
     typeSearch('cart page');
-    const option = screen.getByRole('option', { name: /cart page: item quantity selector/i });
+    const option = screen.getByRole('option', {
+      name: /cart page: item quantity selector/i,
+    });
     expect(option).toHaveTextContent('retail-v2');
     expect(option).toHaveTextContent('Waiting for input');
     fireEvent.click(option);
@@ -148,7 +166,9 @@ describe('CommandPalette intents', () => {
   it('opens Overview for an intent with no pending human action and never calls a stalled run Running', () => {
     renderPalette();
     typeSearch('low-stock');
-    const option = screen.getByRole('option', { name: /low-stock warning badge/i });
+    const option = screen.getByRole('option', {
+      name: /low-stock warning badge/i,
+    });
     expect(option).toHaveTextContent('Stalled · no activity for 4 months');
     expect(option).not.toHaveTextContent(/running/i);
     expect(option.querySelector('[data-pulse]')).toBeNull();
@@ -172,7 +192,9 @@ describe('CommandPalette intents', () => {
     }));
     try {
       typeSearch('cart page');
-      const option = screen.getByRole('option', { name: /cart page: item quantity selector/i });
+      const option = screen.getByRole('option', {
+        name: /cart page: item quantity selector/i,
+      });
       expect(option).toHaveAttribute('data-prefetch-href', '/space/retail/intent/cart');
       fireEvent.pointerOver(option);
       act(() => {
@@ -224,7 +246,9 @@ describe('CommandPalette relevance', () => {
     typeSearch('cart');
     expect(screen.getByRole('option', { name: /cart-analytics/i })).toBeInTheDocument();
     expect(
-      screen.getByRole('option', { name: /cart page: item quantity selector/i }),
+      screen.getByRole('option', {
+        name: /cart page: item quantity selector/i,
+      }),
     ).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /llm-router-hackathon/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /route requests/i })).toBeNull();
@@ -244,7 +268,9 @@ describe('CommandPalette relevance', () => {
     renderPalette();
     typeSearch('qua sel');
     expect(
-      screen.getByRole('option', { name: /cart page: item quantity selector/i }),
+      screen.getByRole('option', {
+        name: /cart page: item quantity selector/i,
+      }),
     ).toBeInTheDocument();
     typeSearch('quantity hackathon');
     expect(screen.queryByRole('option', { name: /cart page/i })).toBeNull();
@@ -261,8 +287,16 @@ describe('CommandPalette status', () => {
           updatedAt: '2026-11-20T00:00:00.000Z',
         },
         gates: [
-          { humanTaskId: 'old', status: 'pending', createdAt: '2026-07-08T00:00:00.000Z' },
-          { humanTaskId: 'task-1', status: 'pending', createdAt: '2026-11-20T00:00:00.000Z' },
+          {
+            humanTaskId: 'old',
+            status: 'pending',
+            createdAt: '2026-07-08T00:00:00.000Z',
+          },
+          {
+            humanTaskId: 'task-1',
+            status: 'pending',
+            createdAt: '2026-11-20T00:00:00.000Z',
+          },
         ],
         stages: [],
         events: [],
@@ -271,7 +305,9 @@ describe('CommandPalette status', () => {
     mockCache.peek.mockImplementation(() => snapshot);
     renderPalette();
     typeSearch('cart page');
-    const option = screen.getByRole('option', { name: /cart page: item quantity selector/i });
+    const option = screen.getByRole('option', {
+      name: /cart page: item quantity selector/i,
+    });
     const days = Math.floor((Date.now() - Date.parse('2026-07-08T00:00:00.000Z')) / 86_400_000);
     expect(option).toHaveTextContent(`Waiting for input · ${days} days`);
     mockCache.peek.mockImplementation(() => undefined);
@@ -292,10 +328,12 @@ describe('CommandPalette pages', () => {
     expect(screen.getByRole('option', { name: /source control/i })).toBeInTheDocument();
   });
 
-  it('lists authoring, every admin tab and account settings', () => {
+  it('lists Spaces, My work, authoring, every admin tab and account settings', () => {
     renderPalette();
     const pages = screen.getByRole('group', { name: 'Pages' });
     for (const name of [
+      'Spaces',
+      'My work',
       'Workflows',
       'Block library',
       'Admin › Users',
@@ -328,9 +366,21 @@ describe('CommandPalette pages', () => {
 });
 
 describe('CommandPalette actions', () => {
-  it('"Create new space" opens the create flow on the Spaces page', () => {
-    renderPalette();
+  it('"Create new space" opens the shell\'s dialog where the reader is', () => {
+    const { onCreateSpace, onOpenChange } = renderPalette();
     fireEvent.click(screen.getByRole('option', { name: /create new space/i }));
-    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard?reopenCreateSpace=1');
+    expect(onCreateSpace).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(screen.getByTestId('current-path')).toHaveTextContent('/dashboard');
+  });
+
+  it.each([
+    ['Spaces', '/dashboard'],
+    ['My work', '/my-work'],
+  ])('opens %s at %s', (name, path) => {
+    renderPalette();
+    const pages = screen.getByRole('group', { name: 'Pages' });
+    fireEvent.click(within(pages).getByRole('option', { name }));
+    expect(screen.getByTestId('current-path')).toHaveTextContent(path);
   });
 });

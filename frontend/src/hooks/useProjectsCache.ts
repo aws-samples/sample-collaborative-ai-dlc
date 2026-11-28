@@ -22,6 +22,7 @@ import { intentAttention } from '@/lib/sprintStatus';
 import { queryClient, querySessionOpen } from '@/lib/queryClient';
 import {
   isCancelledError,
+  notifyManager,
   QueriesObserver,
   queryOptions,
   useQuery,
@@ -365,10 +366,13 @@ function markDirty(): void {
   dirty = true;
 }
 
-function notifyView(): void {
+// The query cache notifies synchronously, also while a component renders (a
+// query created on first render); deferring keeps React from updating the
+// sidebar or header in the middle of another component's render.
+const notifyView = notifyManager.batchCalls((): void => {
   markDirty();
   for (const listener of Array.from(viewListeners)) listener();
-}
+});
 
 function deriveItem(project: Project): ProjectWithSprint {
   const fallbackEntry = hydratedPortfolio?.items.get(project.id);
@@ -888,7 +892,9 @@ function getSprintsView(projectId: string | null): SprintsView {
 export function useProjectSprintsCache(projectId: string | null) {
   const subscribe = useCallback(
     (onStoreChange: () => void) =>
-      projectId ? queryClient.getQueryCache().subscribe(onStoreChange) : () => {},
+      projectId
+        ? queryClient.getQueryCache().subscribe(notifyManager.batchCalls(onStoreChange))
+        : () => {},
     [projectId],
   );
   const getSnapshot = useCallback(() => getSprintsView(projectId), [projectId]);

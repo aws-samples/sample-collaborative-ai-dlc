@@ -5,7 +5,11 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { TooltipProvider } from '@/components/ui/tooltip';
 
 const authState = vi.hoisted(() => ({
-  user: { username: 'hector', displayName: 'Hector Sy', email: 'hector@example.com' },
+  user: {
+    username: 'hector',
+    displayName: 'Hector Sy',
+    email: 'hector@example.com',
+  },
   isPlatformAdmin: false,
   logout: vi.fn(),
 }));
@@ -38,10 +42,15 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   getCachedIntentSummary: (...args: unknown[]) => cachedSummary(...(args as [])),
 }));
 
-const routePrefetch = vi.hoisted(() => ({ prefetchHref: vi.fn(), preloadHref: vi.fn() }));
+const routePrefetch = vi.hoisted(() => ({
+  prefetchHref: vi.fn(),
+  preloadHref: vi.fn(),
+}));
 vi.mock('@/lib/routePrefetch', () => routePrefetch);
 
-vi.mock('@/components/domain/PresenceAvatars', () => ({ PresenceAvatars: () => null }));
+vi.mock('@/components/domain/PresenceAvatars', () => ({
+  PresenceAvatars: () => null,
+}));
 vi.mock('@/components/theme/ThemeToggle', () => ({ ThemeToggle: () => null }));
 
 import { AppHeader } from './AppHeader';
@@ -61,6 +70,7 @@ function renderHeader(path: string) {
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/dashboard" element={header} />
+          <Route path="/spaces" element={header} />
           <Route path="/space/:projectId" element={header} />
           <Route path="/space/:projectId/intent/new" element={header} />
           <Route path="/space/:projectId/intent/:intentId/compose" element={header} />
@@ -75,7 +85,9 @@ function renderHeader(path: string) {
 beforeEach(() => {
   authState.isPlatformAdmin = false;
   projectState.project = { id: 'p1', name: 'retail-v2' };
-  intentState.detail = { intent: { title: 'Add a promo code field', status: 'RUNNING' } };
+  intentState.detail = {
+    intent: { title: 'Add a promo code field', status: 'RUNNING' },
+  };
   intentState.notFound = false;
   intentState.insideProvider = true;
   cachedSummary.mockReset().mockReturnValue(undefined);
@@ -109,7 +121,11 @@ describe('AppHeader intent crumb before the detail is known (R3-1, R3-2)', () =>
 
   it('uses the cached list title while the detail loads', () => {
     intentState.detail = null;
-    cachedSummary.mockReturnValue({ id: 'i1', title: 'Cached promo title', status: 'WAITING' });
+    cachedSummary.mockReturnValue({
+      id: 'i1',
+      title: 'Cached promo title',
+      status: 'WAITING',
+    });
     renderHeader('/space/p1/intent/i1/compose');
     const trail = within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('list');
     expect(within(trail).getByRole('link', { name: 'Cached promo title' })).toBeInTheDocument();
@@ -120,7 +136,9 @@ describe('AppHeader activity toggle', () => {
   it('announces whether the activity panel is open and which landmark it controls', () => {
     renderHeader('/space/p1/intent/i1/compose');
 
-    const toggle = screen.getByRole('button', { name: 'Toggle activity panel' });
+    const toggle = screen.getByRole('button', {
+      name: 'Toggle activity panel',
+    });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(toggle).toHaveAttribute('aria-controls', 'activity-panel');
   });
@@ -160,6 +178,11 @@ describe('AppHeader breadcrumb', () => {
 
     const back = screen.getByRole('link', { name: 'Back to Spaces' });
     expect(back).toHaveAttribute('href', '/dashboard');
+    const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(nav).getByRole('link', { name: 'Spaces' })).toHaveAttribute('href', '/dashboard');
+    within(nav)
+      .getAllByText('retail-v2')
+      .forEach((crumb) => expect(crumb).toHaveAttribute('aria-current', 'page'));
   });
 
   it('calls a placeholder-titled draft "Untitled draft", like the page does', () => {
@@ -207,12 +230,16 @@ describe('AppHeader breadcrumb', () => {
       .forEach((crumb) => expect(crumb).toHaveAttribute('aria-current', 'page'));
   });
 
-  it('shows the page name alone when there is no parent', () => {
-    renderHeader('/dashboard');
+  it.each([
+    ['/dashboard', 'Spaces'],
+    ['/spaces', 'Spaces'],
+    ['/my-work', 'My work'],
+  ])('shows the page name alone when there is no parent: %s', (path, label) => {
+    renderHeader(path);
 
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
     expect(within(nav).queryAllByRole('link')).toHaveLength(0);
-    const crumbs = within(nav).getAllByText('Spaces');
+    const crumbs = within(nav).getAllByText(label);
     crumbs.forEach((crumb) => expect(crumb).toHaveAttribute('aria-current', 'page'));
     expect(screen.queryByRole('link', { name: /^Back to/ })).not.toBeInTheDocument();
   });

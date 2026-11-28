@@ -12,7 +12,6 @@ vi.mock('react-router', async (importOriginal) => ({
 vi.mock('@/services/trackers', () => ({
   trackersService: { finalizeJiraConnection: vi.fn() },
 }));
-
 const returnPath = '/space/project-1/settings?tab=trackers&addJiraProject=1';
 
 beforeEach(() => {
@@ -54,7 +53,13 @@ describe('Jira authorization return', () => {
     await showCallback({
       pendingChoice: {
         ticket: 'example-ticket',
-        resources: [{ cloudId: 'site-1', name: 'Career Compass', host: 'example.atlassian.net' }],
+        resources: [
+          {
+            cloudId: 'site-1',
+            name: 'Career Compass',
+            host: 'example.atlassian.net',
+          },
+        ],
       },
     });
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Connect' })));
@@ -70,8 +75,16 @@ describe('Jira authorization return', () => {
       pendingChoice: {
         ticket: 'example-ticket',
         resources: [
-          { cloudId: 'site-1', name: 'Career Compass', host: 'example.atlassian.net' },
-          { cloudId: 'site-2', name: 'Other site', host: 'other.atlassian.net' },
+          {
+            cloudId: 'site-1',
+            name: 'Career Compass',
+            host: 'example.atlassian.net',
+          },
+          {
+            cloudId: 'site-2',
+            name: 'Other site',
+            host: 'other.atlassian.net',
+          },
         ],
       },
     });
@@ -95,8 +108,16 @@ describe('Jira authorization return', () => {
         pendingChoice: {
           ticket: 'example-ticket',
           resources: [
-            { cloudId: 'site-1', name: 'Career Compass', host: 'example.atlassian.net' },
-            { cloudId: 'site-2', name: 'Other site', host: 'other.atlassian.net' },
+            {
+              cloudId: 'site-1',
+              name: 'Career Compass',
+              host: 'example.atlassian.net',
+            },
+            {
+              cloudId: 'site-2',
+              name: 'Other site',
+              host: 'other.atlassian.net',
+            },
           ],
         },
       });
@@ -111,7 +132,7 @@ describe('Jira authorization return', () => {
   );
 
   it.each([null, '//example.com', 'https://example.com'])(
-    'uses the dashboard for a missing or external return path: %s',
+    'uses the Spaces dashboard for a missing or external return path: %s',
     async (path) => {
       if (path) sessionStorage.setItem('oauth_return_to', path);
       await showCallback({ success: true });

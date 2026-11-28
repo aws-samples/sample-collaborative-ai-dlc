@@ -2,7 +2,7 @@ import {
   SpacePermissionsProvider,
   SpacePermissionsNotice,
 } from '@/contexts/SpacePermissionsContext';
-import { Outlet, useParams, useLocation } from 'react-router';
+import { Outlet, useParams, useLocation, useSearchParams } from 'react-router';
 import { cn } from '@/lib/utils';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -14,7 +14,9 @@ import { detectSection } from '@/components/layout/IntentPipelineBar';
 // that don't belong in the eager main chunk — they only render when a side
 // panel is open on sprint/intent routes.
 const ActivityPanel = lazy(() =>
-  import('@/components/layout/ActivityPanel').then((m) => ({ default: m.ActivityPanel })),
+  import('@/components/layout/ActivityPanel').then((m) => ({
+    default: m.ActivityPanel,
+  })),
 );
 const IntentActivityPanel = lazy(() =>
   import('@/components/layout/IntentActivityPanel').then((m) => ({
@@ -24,7 +26,9 @@ const IntentActivityPanel = lazy(() =>
 // Lazy: the v1 sprint bar (and its v1 services/hooks) only renders on sprint
 // routes; v2 pages must not pay for it in the shell chunk.
 const SprintPipelineBar = lazyWithPreload(() =>
-  import('@/components/layout/SprintPipelineBar').then((m) => ({ default: m.SprintPipelineBar })),
+  import('@/components/layout/SprintPipelineBar').then((m) => ({
+    default: m.SprintPipelineBar,
+  })),
 );
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
@@ -32,8 +36,10 @@ import { DiscussionProvider } from '@/components/discussion/DiscussionProvider';
 import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache, useProjectsCache } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { CreateSpaceContext } from './createSpaceDialog';
 import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
-import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { PANELS_INLINE_MIN_WIDTH, usePanelsInline } from '@/hooks/usePanelsInline';
+import { isGitProvider, type GitProvider } from '@/services/gitProvider';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
 import { lazyWithPreload } from '@/lib/lazyWithPreload';
 import { setLastIntentSection } from '@/lib/intentSectionPreference';
@@ -65,12 +71,11 @@ export function shouldDefaultOpen(pathname: string): boolean {
   return false;
 }
 
-// Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
-// overlays above the content instead of grid columns. One shared breakpoint
-// keeps the two panels' behavior consistent, and the activity overlay never
-// opens by itself there — it would cover the page (W1).
-export const PANELS_INLINE_MIN_WIDTH = 1024;
-const PANELS_INLINE_QUERY = `(min-width: ${PANELS_INLINE_MIN_WIDTH}px)`;
+// Below PANELS_INLINE_MIN_WIDTH (hooks/usePanelsInline) BOTH side panels
+// render as NON-modal overlays above the content instead of grid columns. One
+// shared breakpoint keeps the two panels' behavior consistent, and the
+// activity overlay never opens by itself there — it would cover the page (W1).
+export { PANELS_INLINE_MIN_WIDTH };
 
 export const ACTIVITY_PANEL_OPEN_STORAGE_KEY = 'aidlc-activity-panel-open';
 
@@ -175,12 +180,33 @@ export function AppShell() {
     if (intentId) setLastIntentSection(intentId, detectSection(location.pathname));
   }, [intentId, location.pathname]);
 
-  const panelsInline = useMediaQuery(PANELS_INLINE_QUERY);
-  // The sidebar's Create space dialog lives here so it survives the sidebar
-  // unmounting when the viewport crosses the inline breakpoint (R3-8).
+  const panelsInline = usePanelsInline();
+  // The Create space dialog lives here so it survives the sidebar unmounting
+  // when the viewport crosses the inline breakpoint (R3-8), and so a
+  // `?reopenCreateSpace=1` link (OAuth return, command palette, empty states)
+  // opens it on whatever page the reader lands.
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
-  const openCreateSpace = useCallback(() => setCreateSpaceOpen(true), []);
+  const [createSpaceProvider, setCreateSpaceProvider] = useState<GitProvider | ''>('');
+  const [createSpaceInstance, setCreateSpaceInstance] = useState<string>();
+  const openCreateSpace = useCallback(() => {
+    setCreateSpaceProvider('');
+    setCreateSpaceInstance(undefined);
+    setCreateSpaceOpen(true);
+  }, []);
   const { refresh: refreshProjects } = useProjectsCache();
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get('reopenCreateSpace') !== '1') return;
+    const provider = searchParams.get('gitProvider');
+    setCreateSpaceProvider(isGitProvider(provider) ? provider : '');
+    setCreateSpaceInstance(searchParams.get('gitlabInstance') || undefined);
+    setCreateSpaceOpen(true);
+    const rest = new URLSearchParams(searchParams);
+    rest.delete('reopenCreateSpace');
+    rest.delete('gitProvider');
+    rest.delete('gitlabInstance');
+    setSearchParams(rest, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   // On a project page (not in a sprint) the activity panel surfaces the
   // latest active sprint so it stays useful outside a sprint context.
@@ -328,189 +354,197 @@ export function AppShell() {
 
   return (
     <SpacePermissionsProvider projectId={projectId}>
-      <TooltipProvider delayDuration={200}>
-        {/* DiscussionProvider sits above BOTH the routed pages and the
+      <CreateSpaceContext.Provider value={openCreateSpace}>
+        <TooltipProvider delayDuration={200}>
+          {/* DiscussionProvider sits above BOTH the routed pages and the
           ActivityPanel so the Discussions tab, the entry-point buttons, the
           panel-hosted thread and the mention toasts share one state.
           IntentProvider is likewise always mounted (inert off intent routes)
           so the routed IntentView and the AppShell-hosted IntentActivityPanel
           share one fetch/realtime/output-buffer state. */}
-        <DiscussionProvider onDiscussionOpen={showActivityPanel}>
-          <IntentProvider onAgentFocus={showActivityPanel}>
-            <div className="flex h-screen flex-col bg-background">
-              <a
-                href={`#${MAIN_CONTENT_ID}`}
-                onClick={(event) => {
-                  event.preventDefault();
-                  document.getElementById(MAIN_CONTENT_ID)?.focus();
-                }}
-                className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-              >
-                Skip to content
-              </a>
-              {/* Header */}
-              <AppHeader
-                onToggleSidebar={toggleSidebar}
-                onToggleActivity={toggleActivity}
-                onOpenCommand={() => setCommandOpen(true)}
-                sidebarCollapsed={sidebarCollapsed}
-                activityPanelOpen={activityPanelOpen}
-              />
-              <SpacePermissionsNotice />
-
-              {/* Main content area (relative: hosts the small-screen overlays,
-              clipped between header and status bar) */}
-              <div
-                className="relative flex-1 overflow-hidden grid"
-                style={{ gridTemplateColumns: gridColumns }}
-              >
-                {/* Sidebar - inline column on lg+, with a resize handle */}
-                {showSidebar && panelsInline && (
-                  <aside
-                    id="app-sidebar"
-                    aria-label="Main navigation"
-                    className="relative flex border-r overflow-hidden"
-                  >
-                    <AppSidebar onCreateSpace={openCreateSpace} />
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label="Resize sidebar"
-                      aria-controls="app-sidebar"
-                      aria-valuenow={sidebarPanel.width}
-                      aria-valuemin={SIDEBAR_SIZING.minWidth}
-                      aria-valuemax={SIDEBAR_SIZING.maxWidth}
-                      aria-valuetext={`${sidebarPanel.width} pixels`}
-                      tabIndex={0}
-                      onPointerDown={sidebarPanel.handleResizeStart}
-                      onKeyDown={sidebarPanel.handleResizeKey}
-                      onDoubleClick={sidebarPanel.resetWidth}
-                      className={cn(RESIZE_HANDLE_CLASS, 'right-0')}
-                    />
-                  </aside>
-                )}
-
-                {/* Main content */}
-                <main
-                  id={MAIN_CONTENT_ID}
-                  tabIndex={-1}
-                  className="h-full overflow-hidden min-w-0 flex flex-col outline-none"
+          <DiscussionProvider onDiscussionOpen={showActivityPanel}>
+            <IntentProvider onAgentFocus={showActivityPanel}>
+              <div className="flex h-screen flex-col bg-background">
+                <a
+                  href={`#${MAIN_CONTENT_ID}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    document.getElementById(MAIN_CONTENT_ID)?.focus();
+                  }}
+                  className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                 >
-                  {inSprint && (
-                    <Suspense fallback={<div aria-hidden="true" className="h-11 border-b" />}>
-                      <SprintPipelineBar />
-                    </Suspense>
-                  )}
-                  <div
-                    className={cn(
-                      'flex-1 overflow-y-auto min-w-0',
-                      onGraphPage ? 'overflow-hidden' : 'px-6 py-6',
-                    )}
-                  >
-                    <Outlet />
-                  </div>
-                </main>
-
-                {/* Activity panel - inline column on lg+, with a resize handle */}
-                {showActivity && panelsInline && (
-                  <aside
-                    id={ACTIVITY_PANEL_ID}
-                    aria-label="Activity panel"
-                    className="relative flex min-w-0 overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]"
-                  >
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label="Resize activity panel"
-                      aria-controls={ACTIVITY_PANEL_ID}
-                      aria-valuenow={activityPanel.width}
-                      aria-valuemin={ACTIVITY_PANEL_SIZING.minWidth}
-                      aria-valuemax={activityPanel.effectiveMaxWidth}
-                      aria-valuetext={`${activityPanel.width} pixels`}
-                      tabIndex={0}
-                      onPointerDown={activityPanel.handleResizeStart}
-                      onKeyDown={activityPanel.handleResizeKey}
-                      onDoubleClick={activityPanel.resetWidth}
-                      className={cn(RESIZE_HANDLE_CLASS, 'left-0')}
-                    />
-                    {inIntent ? (
-                      <Suspense fallback={null}>
-                        <IntentActivityPanel onClose={closeActivityPanel} />
-                      </Suspense>
-                    ) : (
-                      <Suspense fallback={null}>
-                        <ActivityPanel
-                          sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                          onClose={closeActivityPanel}
-                        />
-                      </Suspense>
-                    )}
-                  </aside>
-                )}
-
-                {/* Small-screen navigation drawer: the shared Sheet brings the scrim,
-                tap-outside and Escape to close, and focus return (R5-32). */}
-                <Sheet
-                  open={showSidebar && !panelsInline}
-                  onOpenChange={(open) => !open && closeMobileSidebar()}
-                >
-                  <SheetContent
-                    side="left"
-                    id="app-sidebar"
-                    aria-describedby={undefined}
-                    className="flex w-72 max-w-[85vw] overflow-hidden p-0 [&>button]:hidden"
-                  >
-                    <SheetTitle className="sr-only">Main navigation</SheetTitle>
-                    <AppSidebar onCreateSpace={openCreateSpace} />
-                  </SheetContent>
-                </Sheet>
-                {/* The activity overlay stays NON-modal: the content behind it
-                remains visible and interactive. */}
-                {showActivity && !panelsInline && (
-                  <aside
-                    ref={activityOverlayRef}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Escape' || event.defaultPrevented) return;
-                      event.stopPropagation();
-                      closeActivityPanel();
-                    }}
-                    id={ACTIVITY_PANEL_ID}
-                    aria-label="Activity panel"
-                    tabIndex={-1}
-                    className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl"
-                  >
-                    {inIntent ? (
-                      <Suspense fallback={null}>
-                        <IntentActivityPanel onClose={closeActivityPanel} />
-                      </Suspense>
-                    ) : (
-                      <Suspense fallback={null}>
-                        <ActivityPanel
-                          sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                          onClose={closeActivityPanel}
-                        />
-                      </Suspense>
-                    )}
-                  </aside>
-                )}
-              </div>
-
-              {createSpaceOpen && (
-                <CreateProjectModal
-                  onClose={() => setCreateSpaceOpen(false)}
-                  onCreated={refreshProjects}
+                  Skip to content
+                </a>
+                {/* Header */}
+                <AppHeader
+                  onToggleSidebar={toggleSidebar}
+                  onToggleActivity={toggleActivity}
+                  onOpenCommand={() => setCommandOpen(true)}
+                  sidebarCollapsed={sidebarCollapsed}
+                  activityPanelOpen={activityPanelOpen}
                 />
-              )}
+                <SpacePermissionsNotice />
 
-              {/* Status bar */}
-              <StatusBar />
+                {/* Main content area (relative: hosts the small-screen overlays,
+              clipped between header and status bar) */}
+                <div
+                  className="relative flex-1 overflow-hidden grid"
+                  style={{ gridTemplateColumns: gridColumns }}
+                >
+                  {/* Sidebar - inline column on lg+, with a resize handle */}
+                  {showSidebar && panelsInline && (
+                    <aside
+                      id="app-sidebar"
+                      aria-label="Main navigation"
+                      className="relative flex border-r overflow-hidden"
+                    >
+                      <AppSidebar onCreateSpace={openCreateSpace} />
+                      <div
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize sidebar"
+                        aria-controls="app-sidebar"
+                        aria-valuenow={sidebarPanel.width}
+                        aria-valuemin={SIDEBAR_SIZING.minWidth}
+                        aria-valuemax={sidebarPanel.effectiveMaxWidth}
+                        aria-valuetext={`${sidebarPanel.width} pixels`}
+                        tabIndex={0}
+                        onPointerDown={sidebarPanel.handleResizeStart}
+                        onKeyDown={sidebarPanel.handleResizeKey}
+                        onDoubleClick={sidebarPanel.resetWidth}
+                        className={cn(RESIZE_HANDLE_CLASS, 'right-0')}
+                      />
+                    </aside>
+                  )}
 
-              {/* Command palette */}
-              <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-            </div>
-          </IntentProvider>
-        </DiscussionProvider>
-      </TooltipProvider>
+                  {/* Main content */}
+                  <main
+                    id={MAIN_CONTENT_ID}
+                    tabIndex={-1}
+                    className="h-full overflow-hidden min-w-0 flex flex-col outline-none"
+                  >
+                    {inSprint && (
+                      <Suspense fallback={<div aria-hidden="true" className="h-11 border-b" />}>
+                        <SprintPipelineBar />
+                      </Suspense>
+                    )}
+                    <div
+                      className={cn(
+                        'flex-1 overflow-y-auto min-w-0',
+                        onGraphPage ? 'overflow-hidden' : 'px-6 py-6',
+                      )}
+                    >
+                      <Outlet />
+                    </div>
+                  </main>
+
+                  {/* Activity panel - inline column on lg+, with a resize handle */}
+                  {showActivity && panelsInline && (
+                    <aside
+                      id={ACTIVITY_PANEL_ID}
+                      aria-label="Activity panel"
+                      className="relative flex min-w-0 overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]"
+                    >
+                      <div
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize activity panel"
+                        aria-controls={ACTIVITY_PANEL_ID}
+                        aria-valuenow={activityPanel.width}
+                        aria-valuemin={ACTIVITY_PANEL_SIZING.minWidth}
+                        aria-valuemax={activityPanel.effectiveMaxWidth}
+                        aria-valuetext={`${activityPanel.width} pixels`}
+                        tabIndex={0}
+                        onPointerDown={activityPanel.handleResizeStart}
+                        onKeyDown={activityPanel.handleResizeKey}
+                        onDoubleClick={activityPanel.resetWidth}
+                        className={cn(RESIZE_HANDLE_CLASS, 'left-0')}
+                      />
+                      {inIntent ? (
+                        <Suspense fallback={null}>
+                          <IntentActivityPanel onClose={closeActivityPanel} />
+                        </Suspense>
+                      ) : (
+                        <Suspense fallback={null}>
+                          <ActivityPanel
+                            sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                            onClose={closeActivityPanel}
+                          />
+                        </Suspense>
+                      )}
+                    </aside>
+                  )}
+
+                  {/* Small-screen navigation drawer: the shared Sheet brings the scrim,
+                tap-outside and Escape to close, and focus return (R5-32). */}
+                  <Sheet
+                    open={showSidebar && !panelsInline}
+                    onOpenChange={(open) => !open && closeMobileSidebar()}
+                  >
+                    <SheetContent
+                      side="left"
+                      id="app-sidebar"
+                      aria-describedby={undefined}
+                      className="flex w-72 max-w-[85vw] overflow-hidden p-0 [&>button]:hidden"
+                    >
+                      <SheetTitle className="sr-only">Main navigation</SheetTitle>
+                      <AppSidebar variant="drawer" onCreateSpace={openCreateSpace} />
+                    </SheetContent>
+                  </Sheet>
+                  {/* The activity overlay stays NON-modal: the content behind it
+                remains visible and interactive. */}
+                  {showActivity && !panelsInline && (
+                    <aside
+                      ref={activityOverlayRef}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Escape' || event.defaultPrevented) return;
+                        event.stopPropagation();
+                        closeActivityPanel();
+                      }}
+                      id={ACTIVITY_PANEL_ID}
+                      aria-label="Activity panel"
+                      tabIndex={-1}
+                      className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl"
+                    >
+                      {inIntent ? (
+                        <Suspense fallback={null}>
+                          <IntentActivityPanel onClose={closeActivityPanel} />
+                        </Suspense>
+                      ) : (
+                        <Suspense fallback={null}>
+                          <ActivityPanel
+                            sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                            onClose={closeActivityPanel}
+                          />
+                        </Suspense>
+                      )}
+                    </aside>
+                  )}
+                </div>
+
+                {createSpaceOpen && (
+                  <CreateProjectModal
+                    initialProvider={createSpaceProvider}
+                    initialInstance={createSpaceInstance}
+                    onClose={() => setCreateSpaceOpen(false)}
+                    onCreated={refreshProjects}
+                  />
+                )}
+
+                {/* Status bar */}
+                <StatusBar />
+
+                {/* Command palette */}
+                <CommandPalette
+                  open={commandOpen}
+                  onOpenChange={setCommandOpen}
+                  onCreateSpace={openCreateSpace}
+                />
+              </div>
+            </IntentProvider>
+          </DiscussionProvider>
+        </TooltipProvider>
+      </CreateSpaceContext.Provider>
     </SpacePermissionsProvider>
   );
 }

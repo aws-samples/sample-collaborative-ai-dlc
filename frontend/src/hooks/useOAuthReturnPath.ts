@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 
 // A successful connection resumes the picker; a denial returns to settings
-// without automatically starting the interrupted connection again.
+// without automatically starting the interrupted connection again. Without a
+// settings page to return to, the reader goes back to the Spaces dashboard.
 export function useOAuthReturnPath() {
   const [returnTo] = useState(() => {
     const saved = sessionStorage.getItem('oauth_return_to');

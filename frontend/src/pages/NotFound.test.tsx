@@ -8,7 +8,7 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/dashboard" element={<p>Spaces page</p>} />
+        <Route path="/dashboard" element={<p>Spaces dashboard</p>} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </MemoryRouter>,
@@ -16,7 +16,7 @@ function renderAt(path: string) {
 }
 
 describe('NotFound', () => {
-  it('says the page does not exist and offers one way back to Spaces', () => {
+  it('says the page does not exist and offers one way back to the Spaces dashboard', () => {
     renderAt('/this-does-not-exist');
 
     expect(

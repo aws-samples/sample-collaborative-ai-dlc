@@ -321,9 +321,12 @@ function buildBreadcrumbs(
     return [{ label: 'Account Settings' }];
   }
 
-  // Dashboard - just "Projects"
-  if (pathname === '/dashboard') {
+  if (pathname === '/dashboard' || pathname === '/spaces') {
     return [{ label: 'Spaces' }];
+  }
+
+  if (pathname === '/my-work') {
+    return [{ label: 'My work' }];
   }
 
   // Observability is a top-level page, not a child of Spaces

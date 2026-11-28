@@ -20,12 +20,9 @@ export function GitOAuthCallback({ trackerProviderId }: { trackerProviderId: str
     if (!result?.success) return;
     const query = new URLSearchParams({ reopenCreateSpace: '1', gitProvider: provider });
     if (provider === 'gitlab' && result.instance) query.set('gitlabInstance', result.instance);
-    const timer = setTimeout(
-      () => navigate(resume ?? `/dashboard?${query}`, { replace: true }),
-      1500,
-    );
+    const timer = setTimeout(() => navigate(resume ?? `${back}?${query}`, { replace: true }), 1500);
     return () => clearTimeout(timer);
-  }, [navigate, provider, resume, result?.success, result?.instance]);
+  }, [navigate, provider, back, resume, result?.success, result?.instance]);
   return (
     <OAuthCallbackShell
       status={!result ? 'loading' : result.success ? 'success' : 'error'}

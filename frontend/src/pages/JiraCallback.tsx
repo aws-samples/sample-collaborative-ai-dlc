@@ -29,8 +29,8 @@ export default function JiraCallback() {
   const status =
     finalState ?? (!result ? 'loading' : result.success ? 'success' : choice ? 'choose' : 'error');
   const leave = useCallback(
-    () => navigate(resume ?? '/dashboard', { replace: true }),
-    [resume, navigate],
+    () => navigate(resume ?? back, { replace: true }),
+    [resume, back, navigate],
   );
 
   useEffect(() => {
