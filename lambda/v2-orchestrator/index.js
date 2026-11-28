@@ -62,6 +62,7 @@ import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { intentMethodologyOptions, planProjectionOptions } from '../shared/intent-methodology.js';
+import { isNativeExecution } from '../shared/native-execution.js';
 import {
   planSegments,
   stageInstanceId as planStageInstanceId,
@@ -668,6 +669,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
+  // A native intent is not run by this stage engine, and the intents API
+  // refuses to start one. Fail closed if one arrives anyway: before the run is
+  // claimed, the workspace is initialized or a stage plan is loaded, and
+  // without writing to the execution.
+  if (isNativeExecution(meta)) {
+    logger.error('refusing to run a native execution on the stage engine', {
+      status: meta.status,
+    });
+    return { ok: false, reason: 'native_engine_unsupported' };
+  }
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
   const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
 

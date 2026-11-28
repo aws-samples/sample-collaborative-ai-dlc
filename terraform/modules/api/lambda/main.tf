@@ -782,6 +782,14 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
         Action   = ["ssm:GetParameter"]
         Resource = ["arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/disabled-clis"]
       },
+      # Native-execution flag (shared/native-execution.js): reported on the
+      # space detail response so the browser can offer the native engine. The
+      # parameter is not managed here; unset means the feature is off.
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = ["arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/native-execution"]
+      },
       # Project teardown deletes the two Space credential SecureStrings. Keep
       # this delete-only so the Projects Lambda cannot read or rotate values.
       {
@@ -3237,6 +3245,10 @@ resource "aws_iam_role_policy" "intents" {
           # Platform stage-skipping toggle (effective value — project override
           # over this — snapshotted onto the execution META at intent create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Native-execution flag (shared/native-execution.js): read when an
+          # intent is created with engine "native". The parameter is not
+          # managed here; a deployment that never set it has the feature off.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/native-execution",
           # Platform default for project PR delivery inheritance.
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).

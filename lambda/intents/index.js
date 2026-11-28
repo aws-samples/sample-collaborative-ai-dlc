@@ -109,6 +109,13 @@ import { mayActOnStages } from '../shared/intent-stage-permissions.js';
 import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import {
+  NATIVE_ENGINE,
+  isNativeExecution,
+  nativeUnsupportedInputError,
+  normalizeEngine,
+  readNativeExecution,
+} from '../shared/native-execution.js';
+import {
   describeAidlcSettingsChange,
   normalizeAidlcSettings,
 } from '../shared/intent-aidlc-settings.js';
@@ -1510,6 +1517,10 @@ const mapIntent = (meta) => ({
   prompt: meta.prompt ?? null,
   draftRevision: meta.draftRevision ?? 0,
   status: meta.status,
+  // Only a native intent carries `engine` and `primaryRepo`. OMITTED, not
+  // nulled, for a platform intent, so its DTO stays byte-identical.
+  ...(meta.engine ? { engine: meta.engine } : {}),
+  ...(meta.primaryRepo ? { primaryRepo: meta.primaryRepo } : {}),
   branch: meta.branch ?? null,
   baseBranch: meta.baseBranch ?? null,
   baseBranches: meta.baseBranches ?? null,
@@ -3654,6 +3665,15 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   }
   const validationDenied = validationIntentDenied(event, meta, response);
   if (validationDenied) return validationDenied;
+  // A native intent has no run loop yet, and the launch below would hand it to
+  // the platform's stage engine. Refused whatever the flag says, until the
+  // native orchestrator loop exists (docs/development/native-execution-plan.md).
+  if (isNativeExecution(meta)) {
+    return response(409, {
+      error: 'Starting a native intent is not available yet',
+      code: 'native_start_unavailable',
+    });
+  }
   // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
   // a CREATED run whose hand-off never reached a live orchestrator (stranded —
   // see the rollback below). init-ws is idempotent in the runtime, so a restart
@@ -4544,6 +4564,20 @@ const handleUpdateIntent = async ({ event, body, projectId, intentId, response }
     return response(404, { error: 'Intent not found' });
   }
   const data = body ? JSON.parse(body) : {};
+  // The engine is fixed when the intent is created. Refused by name rather
+  // than ignored, so a caller never believes it switched engines.
+  if (data.engine !== undefined) {
+    return response(400, {
+      error: 'engine cannot be changed after creation',
+      code: 'engine_immutable',
+    });
+  }
+  // A native draft has no stage plan to select, so the plan inputs are refused
+  // before any of them reaches the plan resolution below.
+  if (isNativeExecution(meta)) {
+    const unsupported = nativeUnsupportedInputError(data);
+    if (unsupported) return response(400, unsupported);
+  }
   // The body's conversation language as a raw tag (#784). The object form is a
   // reopened draft echoing a stored value; it is accepted ONLY with a string
   // tag, so a malformed object cannot masquerade as an explicit clear — it
@@ -6958,9 +6992,194 @@ const resolveIntentRelease = async ({ requestedReleaseId, forAdminTest }) => {
   }
 };
 
+// Branch of a new intent: the caller's override wins; otherwise a readable
+// slug from the title/prompt, de-duplicated against the project's existing
+// intents (best-effort — the listing is capped, and a stale duplicate only
+// means two intents share a branch name candidate, not data corruption).
+const resolveNewIntentBranch = async ({ data, projectId, intentId }) => {
+  if (data.branch) return data.branch;
+  const existing = await store.listProjectExecutions({ projectId, limit: 1000 });
+  const taken = new Set(existing.map((m) => m.branch).filter(Boolean));
+  return branchForIntent({ title: data.title, prompt: data.prompt, intentId, taken });
+};
+
+// The environment snapshot a new intent keeps for its whole lifetime. Returns
+// `{ environment }`, or `{ error }` (a 409 body) when the space's environment
+// cannot be resolved.
+const resolveNewIntentEnvironment = async (cfg) => {
+  try {
+    return {
+      environment: await resolveEnvironmentSnapshot({
+        ddb,
+        tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+        environmentId: cfg.environmentId,
+        fallback: {
+          revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
+          runtimeArn: AGENTCORE_RUNTIME_ARN(),
+          runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
+          imageDigest: process.env.CORE_IMAGE_DIGEST || null,
+          compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+          verification: { status: 'PASSED', source: 'core-runtime' },
+        },
+      }),
+    };
+  } catch (error) {
+    if (isEnvironmentResolutionError(error)) {
+      return { error: { error: error.message, code: error.code } };
+    }
+    throw error;
+  }
+};
+
+// The PR strategy a new intent keeps: the space's override over the platform
+// default. Returns `{ prStrategy }`, or `{ error }` (a 409 body) when one of the
+// space's providers cannot honour it, so the refusal comes before the execution
+// exists rather than at its first unit delivery.
+const resolveNewIntentPrStrategy = async (cfg) => {
+  const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
+  try {
+    assertPrStrategySupported(
+      prStrategy,
+      (cfg.repos ?? []).map((repo) => sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders)),
+    );
+  } catch (error) {
+    if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
+    return { error: { error: error.message, code: error.code } };
+  }
+  return { prStrategy };
+};
+
+// The repositories of a native draft: every repository of the space, with the
+// member's primary one first. The primary repository holds AI-DLC's framework
+// files and records, so a space without a repository cannot hold a native
+// intent, and a space with several needs the member's pick.
+const resolveNativeRepositories = (requestedPrimary, spaceRepos) => {
+  const repos = spaceRepos ?? [];
+  if (repos.length === 0) {
+    return {
+      error: {
+        error: 'A native intent needs a repository — add one to the space first',
+        code: 'native_repository_required',
+      },
+    };
+  }
+  if (requestedPrimary === undefined || requestedPrimary === null) {
+    if (repos.length > 1) {
+      return {
+        error: {
+          error: 'primaryRepo is required when the space has several repositories',
+          code: 'primary_repo_required',
+          repos,
+        },
+      };
+    }
+    return { primaryRepo: repos[0], repos };
+  }
+  if (!repos.includes(requestedPrimary)) {
+    return {
+      error: {
+        error: 'primaryRepo must be one of the repositories of this space',
+        code: 'primary_repo_invalid',
+        repos,
+      },
+    };
+  }
+  return {
+    primaryRepo: requestedPrimary,
+    repos: [requestedPrimary, ...repos.filter((repo) => repo !== requestedPrimary)],
+  };
+};
+
+// Create a native DRAFT (`engine: "native"`, shared/native-execution.js). It
+// has no workflow, scope, release or stage plan: AI-DLC itself decides what
+// runs. Everything else a platform draft snapshots from the space is
+// snapshotted here too, so later space edits do not retarget the intent.
+const handleCreateNativeIntent = async ({ data, projectId, sub, g, response }) => {
+  // The flag is checked before the request is looked at any further, so a
+  // deployment with native execution off answers every native create the same
+  // way and writes nothing.
+  const nativeExecution = await readNativeExecution(ssm, AGENT_SETTINGS_SSM_PREFIX(), {
+    onError: (error) =>
+      logger.warn('native-execution flag could not be read; treating it as disabled', {
+        error: error?.name,
+      }),
+  });
+  if (nativeExecution !== 'enabled') {
+    return response(409, {
+      error: 'Native execution is disabled',
+      code: 'native_execution_disabled',
+    });
+  }
+  const unsupported = nativeUnsupportedInputError(data);
+  if (unsupported) return response(400, unsupported);
+  if (!data.title && !data.prompt) {
+    return response(400, { error: 'title or prompt is required' });
+  }
+  const cfg = await fetchProjectConfig(g, projectId);
+  if (!cfg) {
+    return response(400, { error: 'Project is not a v2 project' });
+  }
+  const repositories = resolveNativeRepositories(data.primaryRepo, cfg.repos);
+  if (repositories.error) return response(400, repositories.error);
+  const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
+    data.baseBranches,
+    repositories.repos,
+  );
+  if (baseBranchesError) {
+    return response(400, { error: baseBranchesError });
+  }
+  const source = normalizeSource(data.source, cfg.trackers);
+  const newIntentId = randomUUID();
+  const branch = await resolveNewIntentBranch({ data, projectId, intentId: newIntentId });
+  const resolvedEnvironment = await resolveNewIntentEnvironment(cfg);
+  if (resolvedEnvironment.error) return response(409, resolvedEnvironment.error);
+  // A native intent delivers by this strategy as a platform intent does, so
+  // it is refused here on the same terms.
+  const resolvedPrStrategy = await resolveNewIntentPrStrategy(cfg);
+  if (resolvedPrStrategy.error) return response(409, resolvedPrStrategy.error);
+  const meta = await store.createExecution({
+    executionId: newIntentId,
+    projectId,
+    intentId: newIntentId,
+    status: 'DRAFT',
+    engine: NATIVE_ENGINE,
+    workflowId: null,
+    workflowVersion: null,
+    startedBy: sub,
+    title: data.title || null,
+    prompt: data.prompt || null,
+    branch,
+    baseBranch: data.baseBranch || cfg.baseBranch,
+    baseBranches,
+    repos: repositories.repos,
+    repoProviders: cfg.repoProviders,
+    primaryRepo: repositories.primaryRepo,
+    gitProvider: cfg.gitProvider,
+    cliModels: cfg.cliModels,
+    tierModels: cfg.tierModels,
+    mcpServersByTier: cfg.mcpServersByTier,
+    customRules: cfg.customRules,
+    conversationLanguage: cfg.conversationLanguage,
+    environment: resolvedEnvironment.environment,
+    deriveEnrichment: await fetchDeriveEnrichment(),
+    parkReleaseSeconds: cfg.parkReleaseSeconds,
+    maxParallelUnits: cfg.maxParallelUnits,
+    prStrategy: resolvedPrStrategy.prStrategy,
+    source,
+  });
+  return response(201, mapIntent(meta));
+};
+
 const handleCreateIntent = async ({ event, body, projectId, sub, g, response, role }) => {
   // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
   const data = body ? JSON.parse(body) : {};
+  // A request without `engine` is a platform intent and runs the code below
+  // exactly as before native execution existed.
+  const engine = normalizeEngine(data.engine);
+  if (engine.error) return response(400, engine.error);
+  if (engine.value === NATIVE_ENGINE) {
+    return handleCreateNativeIntent({ data, projectId, sub, g, response });
+  }
   const releaseTest = validateAdminReleaseTest(event, data);
   if (releaseTest.error) return response(releaseTest.error.status, releaseTest.error.body);
   const methodologyReleaseTest = releaseTest.enabled;
@@ -7544,54 +7763,13 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response, ro
   // issue, record which one. The imported text rides in `prompt`; this is
   // only the back-link. Validated against the project's actual bindings.
   const source = normalizeSource(data.source, cfg.trackers);
-  // Branch: caller override wins; otherwise derive a readable slug from
-  // the title/prompt, de-duplicated against the project's existing intents
-  // (best-effort — the listing is capped, and a stale duplicate only means
-  // two intents share a branch name candidate, not data corruption).
-  let branch = data.branch || null;
-  if (!branch) {
-    const existing = await store.listProjectExecutions({ projectId, limit: 1000 });
-    const taken = new Set(existing.map((m) => m.branch).filter(Boolean));
-    branch = branchForIntent({
-      title: data.title,
-      prompt: data.prompt,
-      intentId: newIntentId,
-      taken,
-    });
-  }
-  let environment;
-  try {
-    environment = await resolveEnvironmentSnapshot({
-      ddb,
-      tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
-      environmentId: cfg.environmentId,
-      fallback: {
-        revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
-        runtimeArn: AGENTCORE_RUNTIME_ARN(),
-        runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
-        imageDigest: process.env.CORE_IMAGE_DIGEST || null,
-        compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
-        verification: { status: 'PASSED', source: 'core-runtime' },
-      },
-    });
-  } catch (error) {
-    if (isEnvironmentResolutionError(error)) {
-      return response(409, { error: error.message, code: error.code });
-    }
-    throw error;
-  }
-  // Refuse a strategy the space's providers cannot honour now, before the
-  // execution exists, rather than failing its first unit lane later.
-  const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
-  try {
-    assertPrStrategySupported(
-      prStrategy,
-      (cfg.repos ?? []).map((repo) => sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders)),
-    );
-  } catch (error) {
-    if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
-    return response(409, { error: error.message, code: error.code });
-  }
+  const branch = await resolveNewIntentBranch({ data, projectId, intentId: newIntentId });
+  const resolvedEnvironment = await resolveNewIntentEnvironment(cfg);
+  if (resolvedEnvironment.error) return response(409, resolvedEnvironment.error);
+  const { environment } = resolvedEnvironment;
+  const resolvedPrStrategy = await resolveNewIntentPrStrategy(cfg);
+  if (resolvedPrStrategy.error) return response(409, resolvedPrStrategy.error);
+  const { prStrategy } = resolvedPrStrategy;
   // Refuse the grant the resolved methodology cannot honour, before the
   // execution exists. An unpinned intent, or a release whose closure ships no
   // construction protocol, has no authored autonomy to reproduce — accepting

@@ -15513,3 +15513,699 @@ describe('Viewer intent access', () => {
     expect((await createIntent(sub, projectId)).statusCode).toBe(403);
   });
 });
+
+// ── Native execution (docs/development/native-execution-plan.md) ──
+
+describe('native engine', () => {
+  const FLAG = '/collab/dev/native-execution';
+  // The platform flag is one SSM parameter. The suite default answers every
+  // read with ParameterNotFound, which is a deployment that never set it.
+  const setNativeFlag = (value) =>
+    ssmMock.on(GetParameterCommand, { Name: FLAG }).resolves({ Parameter: { Value: value } });
+  const flagReads = () =>
+    ssmMock.commandCalls(GetParameterCommand).filter((call) => call.args[0].input.Name === FLAG);
+  const createNative = (sub, projectId, over = {}) =>
+    createIntent(sub, projectId, { engine: 'native', title: 'Native', prompt: 'Build X', ...over });
+  const metaOf = (intentId) => procStore.get(keyOf(`EXEC#${intentId}`, 'META'));
+  const request = (sub, projectId, intentId, method, suffix = '', over = {}) =>
+    handler({
+      httpMethod: method,
+      path: `/projects/${projectId}/intents/${intentId}${suffix}`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+      ...over,
+    });
+  const patchDraft = (sub, projectId, intentId, body) =>
+    request(sub, projectId, intentId, 'PATCH', '', {
+      body: JSON.stringify({ ifDraftRevision: metaOf(intentId)?.draftRevision ?? 0, ...body }),
+    });
+  // One value per plan input a platform create accepts.
+  const PLAN_INPUTS = [
+    ['scope', 'feature'],
+    ['composedGrid', { build: 'EXECUTE' }],
+    ['policyScope', 'feature'],
+    ['skipStageIds', ['build']],
+    ['aidlcSettings', { depth: 'standard' }],
+    ['methodologyReleaseId', 'aidlc-2.11.1'],
+    ['methodologyReleaseTest', true],
+    ['constructionGateAutonomy', 'autonomous'],
+    ['sparseCheckout', { 'owner/repo': ['src'] }],
+  ];
+
+  describe('with the flag disabled', () => {
+    it.each([
+      ['the parameter does not exist', () => {}],
+      [
+        'the parameter cannot be read',
+        () =>
+          ssmMock
+            .on(GetParameterCommand, { Name: FLAG })
+            .rejects(Object.assign(new Error('denied'), { name: 'AccessDeniedException' })),
+      ],
+      ['the value is "disabled"', () => setNativeFlag('disabled')],
+      ['the value is not exactly "enabled"', () => setNativeFlag('Enabled')],
+    ])('refuses a native create and writes nothing when %s', async (_label, arrange) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      arrange();
+      const before = structuredClone([...procStore]);
+
+      const res = await createNative(sub, projectId);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('native_execution_disabled');
+      expect([...procStore]).toEqual(before);
+    });
+
+    it('answers the same way whatever else the request carries', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      for (const over of [{ scope: 'feature' }, { primaryRepo: 'not/there' }, { title: '' }]) {
+        const res = await createNative(sub, projectId, { prompt: '', ...over });
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body).code).toBe('native_execution_disabled');
+      }
+    });
+
+    it('still reads, lists and refuses to start a native draft created before', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      setNativeFlag('enabled');
+      const { id } = JSON.parse((await createNative(sub, projectId)).body);
+      setNativeFlag('disabled');
+
+      const detail = await request(sub, projectId, id, 'GET');
+      expect(detail.statusCode).toBe(200);
+      expect(JSON.parse(detail.body).intent.engine).toBe('native');
+      const list = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents`,
+        pathParameters: { projectId },
+        ...claims(sub),
+      });
+      expect(JSON.parse(list.body).map((intent) => intent.engine)).toEqual(['native']);
+      const started = await request(sub, projectId, id, 'POST', '/start', {
+        body: JSON.stringify({ agentCli: 'claude' }),
+      });
+      expect(started.statusCode).toBe(409);
+      expect(JSON.parse(started.body).code).toBe('native_start_unavailable');
+    });
+  });
+
+  describe('with the flag enabled', () => {
+    beforeEach(() => setNativeFlag('enabled'));
+
+    it('stores a native draft and reports the engine on every intent response', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const res = await createNative(sub, projectId, { baseBranch: 'develop' });
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent).toMatchObject({
+        engine: 'native',
+        status: 'DRAFT',
+        title: 'Native',
+        prompt: 'Build X',
+        repos: ['owner/repo'],
+        primaryRepo: 'owner/repo',
+        baseBranch: 'develop',
+        baseBranches: null,
+        branch: 'aidlc/native',
+        workflowId: null,
+        workflowVersion: null,
+        scope: null,
+        aidlcRepoRef: null,
+        methodologyRelease: null,
+        stageSkipping: null,
+        skipStageIds: null,
+        composedGrid: null,
+        planWarnings: null,
+        agentCli: null,
+        attachments: [],
+      });
+      expect(metaOf(intent.id)).toMatchObject({
+        engine: 'native',
+        status: 'DRAFT',
+        projectId,
+        startedBy: sub,
+        title: 'Native',
+        prompt: 'Build X',
+        repos: ['owner/repo'],
+        primaryRepo: 'owner/repo',
+        baseBranch: 'develop',
+        workflowId: null,
+        workflowVersion: null,
+        methodologyPins: null,
+      });
+
+      const detail = await request(sub, projectId, intent.id, 'GET');
+      expect(detail.statusCode).toBe(200);
+      expect(JSON.parse(detail.body).intent).toMatchObject({ engine: 'native', id: intent.id });
+      expect(JSON.parse(detail.body).stages).toEqual([]);
+      const list = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents`,
+        pathParameters: { projectId },
+        ...claims(sub),
+      });
+      expect(JSON.parse(list.body)).toEqual([expect.objectContaining({ engine: 'native' })]);
+    });
+
+    it('snapshots every space setting a platform draft snapshots, and no plan', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const language = { tag: 'ko', englishName: 'Korean', nativeName: '한국어' };
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(
+          gremlin.process.cardinality.single,
+          'conversation_language',
+          JSON.stringify(language),
+        )
+        .property(
+          gremlin.process.cardinality.single,
+          'custom_mcp_servers',
+          JSON.stringify({ docs: { type: 'http', url: 'https://docs.example/mcp' } }),
+        )
+        .next();
+      const body = { title: 'Same', prompt: 'Build X', branch: 'aidlc/same' };
+
+      const platform = metaOf(
+        JSON.parse((await createIntent(sub, projectId, { ...body, scope: 'feature' })).body).id,
+      );
+      const native = metaOf(JSON.parse((await createNative(sub, projectId, body)).body).id);
+
+      // What a native draft does not take over: the plan of the stage engine.
+      // Every other attribute of the platform row must equal the native row's,
+      // so a setting added to the platform snapshot cannot miss the native one
+      // unnoticed.
+      const planOnly = {
+        workflowId: null,
+        workflowVersion: null,
+        aidlcRepoRef: null,
+        methodologyPins: null,
+        scope: null,
+        stageSkipping: null,
+      };
+      // Differ per intent by construction: keys, ids and timestamps.
+      const perIntent = /^(pk|sk|GSI\d(PK|SK)|executionId|intentId|startedAt|updatedAt)$/;
+      const nativeOnly = ['engine', 'primaryRepo'];
+      for (const [field, value] of Object.entries(platform)) {
+        if (perIntent.test(field) || field in planOnly) continue;
+        expect(native[field], field).toEqual(value);
+      }
+      expect(native).toMatchObject(planOnly);
+      expect(
+        Object.keys(native)
+          .filter((field) => !(field in platform))
+          .toSorted(),
+      ).toEqual(nativeOnly);
+      expect(native.conversationLanguage).toEqual(language);
+      expect(native.mcpServersByTier.project).toHaveProperty('docs');
+      expect(native.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+      expect(native.environment).toBeTruthy();
+    });
+
+    it('snapshots the PR strategy the space resolves', async () => {
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+        .resolves({ Parameter: { Value: 'pr-per-unit' } });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .next();
+
+      const res = await createNative(sub, projectId);
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent).toMatchObject({ engine: 'native', prStrategy: 'pr-per-unit' });
+      expect(metaOf(intent.id).prStrategy).toBe('pr-per-unit');
+    });
+
+    it('refuses a PR strategy the space cannot honour, as a platform create does', async () => {
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+        .resolves({ Parameter: { Value: 'pr-per-unit' } });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy, with a CodeCommit repository: PR per
+      // unit needs draft pull requests, which CodeCommit does not have.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .out('HAS_REPO')
+        .property(gremlin.process.cardinality.single, 'provider', 'codecommit')
+        .next();
+      const platform = await createIntent(sub, projectId);
+      const before = structuredClone([...procStore]);
+
+      const res = await createNative(sub, projectId);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual(JSON.parse(platform.body));
+      expect(JSON.parse(res.body).code).toBe('PR_STRATEGY_UNSUPPORTED');
+      expect([...procStore]).toEqual(before);
+    });
+
+    it('refuses a native create in a space whose environment is not published', async () => {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+      try {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+          .next();
+        const before = structuredClone([...procStore]);
+
+        const res = await createNative(sub, projectId);
+
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body).code).toBe('ENVIRONMENT_NOT_PUBLISHED');
+        expect([...procStore]).toEqual(before);
+      } finally {
+        vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+      }
+    });
+
+    it('creates a platform draft exactly as before when the request names no engine', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const res = await createIntent(sub, projectId);
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent).toMatchObject({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 4,
+        scope: 'feature',
+      });
+      expect(intent).not.toHaveProperty('engine');
+      expect(intent).not.toHaveProperty('primaryRepo');
+      expect(metaOf(intent.id)).not.toHaveProperty('engine');
+      expect(metaOf(intent.id)).not.toHaveProperty('primaryRepo');
+      // A platform create does not even read the flag.
+      expect(flagReads()).toHaveLength(0);
+    });
+
+    it('treats an explicit null engine as a platform intent', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+        engine: null,
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body)).not.toHaveProperty('engine');
+    });
+
+    it.each(['platform', 'Native', '', 7, true, ['native']])(
+      'refuses the unknown engine %j and writes nothing',
+      async (engine) => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const before = structuredClone([...procStore]);
+
+        const res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', engine });
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).code).toBe('engine_invalid');
+        expect([...procStore]).toEqual(before);
+      },
+    );
+
+    it.each(PLAN_INPUTS)('refuses the plan input %s and writes nothing', async (field, value) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const before = structuredClone([...procStore]);
+
+      const res = await createNative(sub, projectId, { [field]: value });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toMatchObject({
+        code: 'native_input_not_supported',
+        fields: [field],
+      });
+      expect([...procStore]).toEqual(before);
+    });
+
+    it('refuses a plan input that is null, on create and on save', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const created = await createNative(sub, projectId, { methodologyReleaseId: null });
+      expect(created.statusCode).toBe(400);
+      expect(JSON.parse(created.body).fields).toEqual(['methodologyReleaseId']);
+
+      const { id } = JSON.parse((await createNative(sub, projectId)).body);
+      const before = structuredClone(metaOf(id));
+      const saved = await patchDraft(sub, projectId, id, { title: 'Renamed', skipStageIds: null });
+      expect(saved.statusCode).toBe(400);
+      expect(JSON.parse(saved.body).fields).toEqual(['skipStageIds']);
+      expect(metaOf(id)).toEqual(before);
+    });
+
+    it('needs a title or a prompt, like a platform draft', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const res = await createIntent(sub, projectId, { engine: 'native' });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('title or prompt is required');
+    });
+
+    it('records the tracker issue a native draft was created from', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const bindingId = await seedTrackerBinding(projectId);
+
+      const res = await createNative(sub, projectId, {
+        source: { bindingId, resourceType: 'issue', resourceId: '42' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body).source).toMatchObject({
+        bindingId,
+        provider: 'github-issues',
+        resourceId: '42',
+      });
+    });
+
+    describe('repositories', () => {
+      it('takes every repository of the space, with the chosen primary first', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await addRepo(projectId, 'owner/lib');
+        await addRepo(projectId, 'owner/docs');
+
+        const res = await createNative(sub, projectId, {
+          primaryRepo: 'owner/lib',
+          baseBranches: { 'owner/lib': 'develop', 'owner/docs': 'main' },
+        });
+
+        expect(res.statusCode).toBe(201);
+        const intent = JSON.parse(res.body);
+        expect(intent.primaryRepo).toBe('owner/lib');
+        expect(intent.repos).toEqual(['owner/lib', 'owner/repo', 'owner/docs']);
+        expect(intent.baseBranches).toEqual({ 'owner/lib': 'develop', 'owner/docs': 'main' });
+        expect(metaOf(intent.id)).toMatchObject({
+          primaryRepo: 'owner/lib',
+          repos: ['owner/lib', 'owner/repo', 'owner/docs'],
+        });
+      });
+
+      it('requires primaryRepo when the space has several repositories', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await addRepo(projectId, 'owner/lib');
+        const before = structuredClone([...procStore]);
+
+        const res = await createNative(sub, projectId);
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body)).toMatchObject({
+          code: 'primary_repo_required',
+          repos: ['owner/repo', 'owner/lib'],
+        });
+        expect([...procStore]).toEqual(before);
+      });
+
+      it.each(['owner/elsewhere', '', 7, ['owner/repo'], { url: 'owner/repo' }])(
+        'refuses the primaryRepo %j, which is not a repository of the space',
+        async (primaryRepo) => {
+          const sub = `u-${randomUUID()}`;
+          const projectId = await seedV2Project(sub);
+          const before = structuredClone([...procStore]);
+
+          const res = await createNative(sub, projectId, { primaryRepo });
+
+          expect(res.statusCode).toBe(400);
+          expect(JSON.parse(res.body).code).toBe('primary_repo_invalid');
+          expect([...procStore]).toEqual(before);
+        },
+      );
+
+      it('refuses a base branch for a repository that is not on the space', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+
+        const res = await createNative(sub, projectId, {
+          baseBranches: { 'owner/elsewhere': 'main' },
+        });
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toContain('owner/elsewhere');
+      });
+
+      it('refuses a space without a repository', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await g.V().has('Project', 'id', projectId).outE('HAS_REPO').drop().next();
+
+        const res = await createNative(sub, projectId);
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).code).toBe('native_repository_required');
+      });
+    });
+
+    describe('draft routes', () => {
+      it.each(['platform', 'native'])(
+        'uploads, lists and deletes an attachment on a %s draft',
+        async (kind) => {
+          const sub = `u-${randomUUID()}`;
+          const projectId = await seedV2Project(sub);
+          const created =
+            kind === 'native'
+              ? await createNative(sub, projectId)
+              : await createIntent(sub, projectId);
+          const { id: intentId } = JSON.parse(created.body);
+
+          const uploaded = await request(sub, projectId, intentId, 'POST', '/attachments/upload', {
+            body: JSON.stringify({
+              attachments: [{ filename: 'notes.md', mimeType: 'text/markdown', size: 42 }],
+            }),
+          });
+          expect(uploaded.statusCode).toBe(200);
+          const [upload] = JSON.parse(uploaded.body).uploads;
+          expect(upload.s3Key).toBe(
+            `intent-attachments/staging/${intentId}/${upload.attachmentId}.md`,
+          );
+
+          // S3 reports the browser's upload; the reservation becomes an attachment.
+          s3Mock.on(HeadObjectCommand).resolves({
+            ContentType: 'text/markdown',
+            ContentLength: 42,
+            VersionId: 'staged',
+          });
+          s3Mock.on(CopyObjectCommand).resolves({ VersionId: 'committed' });
+          s3Mock.on(DeleteObjectCommand).resolves({});
+          await expect(
+            handler({
+              source: 'aws.s3',
+              detail: {
+                bucket: { name: 'artifacts-test' },
+                object: { key: upload.s3Key, 'version-id': 'staged' },
+              },
+            }),
+          ).resolves.toEqual({ ok: true });
+
+          const listed = await request(sub, projectId, intentId, 'GET', '/attachments');
+          expect(listed.statusCode).toBe(200);
+          const { attachments, attachmentRevision } = JSON.parse(listed.body);
+          expect(attachments).toEqual([
+            expect.objectContaining({ attachmentId: upload.attachmentId, filename: 'notes.md' }),
+          ]);
+
+          const removed = await request(
+            sub,
+            projectId,
+            intentId,
+            'DELETE',
+            `/attachments/${upload.attachmentId}`,
+            { queryStringParameters: { attachmentRevision: String(attachmentRevision) } },
+          );
+          expect(removed.statusCode).toBe(200);
+          expect(JSON.parse(removed.body).attachments).toEqual([]);
+          expect(metaOf(intentId).attachments).toEqual([]);
+        },
+      );
+
+      it('lists the tracker attachments of a native draft created from an issue', async () => {
+        vi.stubEnv('TRACKERS_FUNCTION', 'trackers-test');
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const bindingId = await seedTrackerBinding(projectId);
+        const { id } = JSON.parse(
+          (await createNative(sub, projectId, { source: { bindingId, resourceId: '42' } })).body,
+        );
+        lambdaMock.on(InvokeCommand, { FunctionName: 'trackers-test' }).resolves({
+          Payload: Buffer.from(JSON.stringify({ attachments: [] })),
+        });
+
+        const res = await request(sub, projectId, id, 'GET', '/attachments/import');
+
+        expect(res.statusCode).toBe(200);
+        const [call] = lambdaMock
+          .commandCalls(InvokeCommand)
+          .filter((entry) => entry.args[0].input.FunctionName === 'trackers-test');
+        expect(JSON.parse(Buffer.from(call.args[0].input.Payload).toString())).toMatchObject({
+          action: 'issue-attachments',
+          projectId,
+          bindingId,
+          resourceId: '42',
+        });
+      });
+
+      it('saves the title, the prompt and the conversation language of a native draft', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+
+        const res = await patchDraft(sub, projectId, id, {
+          title: 'Renamed',
+          prompt: 'Build Y',
+          conversationLanguage: 'ko',
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(res.body)).toMatchObject({
+          engine: 'native',
+          title: 'Renamed',
+          prompt: 'Build Y',
+          conversationLanguage: { tag: 'ko' },
+        });
+        expect(metaOf(id)).toMatchObject({ engine: 'native', title: 'Renamed', prompt: 'Build Y' });
+      });
+
+      it.each(PLAN_INPUTS)(
+        'refuses to save the plan input %s on a native draft',
+        async (field, value) => {
+          const sub = `u-${randomUUID()}`;
+          const projectId = await seedV2Project(sub);
+          const { id } = JSON.parse((await createNative(sub, projectId)).body);
+          const before = structuredClone(metaOf(id));
+
+          const res = await patchDraft(sub, projectId, id, { title: 'Renamed', [field]: value });
+
+          expect(res.statusCode).toBe(400);
+          expect(JSON.parse(res.body)).toMatchObject({
+            code: 'native_input_not_supported',
+            fields: [field],
+          });
+          expect(metaOf(id)).toEqual(before);
+        },
+      );
+
+      it.each(['platform', 'native'])(
+        'refuses to change the engine of a %s draft',
+        async (kind) => {
+          const sub = `u-${randomUUID()}`;
+          const projectId = await seedV2Project(sub);
+          const created =
+            kind === 'native'
+              ? await createNative(sub, projectId)
+              : await createIntent(sub, projectId);
+          const { id } = JSON.parse(created.body);
+          const before = structuredClone(metaOf(id));
+
+          for (const engine of ['native', 'platform', null]) {
+            const res = await patchDraft(sub, projectId, id, { title: 'Renamed', engine });
+            expect(res.statusCode).toBe(400);
+            expect(JSON.parse(res.body).code).toBe('engine_immutable');
+          }
+          expect(metaOf(id)).toEqual(before);
+        },
+      );
+
+      it('deletes a native draft', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+
+        const res = await request(sub, projectId, id, 'DELETE');
+
+        expect(res.statusCode).toBe(204);
+        expect(metaOf(id)).toBeUndefined();
+        expect((await request(sub, projectId, id, 'GET')).statusCode).toBe(404);
+      });
+
+      it('refuses to start a native draft and hands nothing to the orchestrator', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+        const before = structuredClone(metaOf(id));
+
+        const res = await request(sub, projectId, id, 'POST', '/start', {
+          body: JSON.stringify({ agentCli: 'claude' }),
+        });
+
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body).code).toBe('native_start_unavailable');
+        expect(metaOf(id)).toEqual(before);
+        expect(orchestratorInvokes()).toHaveLength(0);
+        expect(agentcoreMock.calls()).toHaveLength(0);
+      });
+    });
+
+    describe('authorization', () => {
+      it('refuses a native create from someone who is not a member', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const before = structuredClone([...procStore]);
+
+        const res = await createNative(`stranger-${randomUUID()}`, projectId);
+
+        expect(res.statusCode).toBe(403);
+        expect([...procStore]).toEqual(before);
+        expect(flagReads()).toHaveLength(0);
+      });
+
+      it('refuses a native create from a viewer', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const viewer = `viewer-${randomUUID()}`;
+        await seedMembership(projectId, viewer, 'viewer');
+
+        const res = await createNative(viewer, projectId);
+
+        expect(res.statusCode).toBe(403);
+        expect(JSON.parse(res.body).code).toBe('SPACE_WRITE_FORBIDDEN');
+      });
+
+      it('hides a native draft from a non-member and from another space', async () => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        const otherProjectId = await seedV2Project(sub);
+        const { id } = JSON.parse((await createNative(sub, projectId)).body);
+        const stranger = `stranger-${randomUUID()}`;
+        const before = structuredClone(metaOf(id));
+
+        expect((await request(stranger, projectId, id, 'GET')).statusCode).toBe(403);
+        expect((await patchDraft(stranger, projectId, id, { title: 'X' })).statusCode).toBe(403);
+        expect((await request(stranger, projectId, id, 'POST', '/start')).statusCode).toBe(403);
+        expect((await request(sub, otherProjectId, id, 'GET')).statusCode).toBe(404);
+        expect((await patchDraft(sub, otherProjectId, id, { title: 'X' })).statusCode).toBe(404);
+        expect((await request(sub, otherProjectId, id, 'POST', '/start')).statusCode).toBe(404);
+        expect(metaOf(id)).toEqual(before);
+      });
+    });
+  });
+});
