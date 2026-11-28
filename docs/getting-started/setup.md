@@ -916,8 +916,9 @@ The AgentCore tag is the part after the colon. To roll back, set those tags as
 `enable_instances_compute = true`, the AgentCore repository must also hold
 `<tag>-amd64`, which the build created next to the arm64 image. The Yjs
 repository keeps only its last 30 images. Pinned tags freeze both images: the
-epoch has no effect until the two variables are removed again, and the
-deployment summary says so.
+epoch has no effect until the two variables are removed again. The installer
+warns about it before and after the deployment, and `deploy-terraform.sh` says
+so in its summary.
 
 For an advanced manual installation, pass a new value to
 `./scripts/deploy-terraform.sh dev --var os_packages_epoch=2026-W48`, or set it
