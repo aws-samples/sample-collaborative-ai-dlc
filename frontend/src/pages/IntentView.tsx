@@ -17,7 +17,6 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { completionExplanation } from '@/lib/completionExplanation';
-import { resumeOrExplain, type ResumeNotice } from '@/lib/intentActions';
 import { PendingQuestionsTabs, gateQuestionCount } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -25,7 +24,12 @@ import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
 import { IntentOutcomeCallout } from '@/components/intent/IntentOutcomeCallout';
 import { IntentPageHeader } from '@/components/intent/IntentPageHeader';
-import { reshapeDisabledReason, VIEW_ONLY_REASON } from '@/lib/intentActions';
+import {
+  reshapeDisabledReason,
+  resumeOrExplain,
+  VIEW_ONLY_REASON,
+  type ResumeNotice,
+} from '@/lib/intentActions';
 import { IntentActionsMenu } from '@/components/intent/IntentActionsMenu';
 import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { GateCard } from '@/components/intent/GateCard';
@@ -729,7 +733,12 @@ export default function IntentView() {
               projectId={projectId}
               intentId={intentId}
               userName={userName}
-              onAnswer={answerGate}
+              // Once answered, the gate is no longer this page's: back to the
+              // intent, as StageReviewPanel does after a decision.
+              onAnswer={async (gate, input) => {
+                await answerGate(gate, input);
+                navigate(workPath);
+              }}
             />
             <Button
               variant="outline"

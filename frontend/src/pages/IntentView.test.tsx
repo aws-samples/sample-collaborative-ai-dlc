@@ -2945,6 +2945,41 @@ describe('IntentView — /review deep link truth (T4)', () => {
     expect(screen.getAllByText('Artifacts').length).toBeGreaterThan(0);
   });
 
+  it('returns to the intent after answering on the review page, not to "no longer pending"', async () => {
+    const pending = withGate({
+      ...questionGate(),
+      humanTaskId: 'g-1',
+      kind: 'approval',
+      questions: null,
+      prompt: 'Go?',
+    });
+    const done = withGate(
+      {
+        ...questionGate('answered'),
+        humanTaskId: 'g-1',
+        kind: 'approval',
+        questions: null,
+        prompt: 'Go?',
+      },
+      'RUNNING',
+    );
+    get.mockResolvedValueOnce(pending).mockResolvedValue(done);
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [
+        { stageInstanceId: 'si-feas', reason: 'unmapped', access: { decide: true, edit: true } },
+      ],
+    });
+    renderAt('/space/p1/intent/i1/review/g-1');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'g-1', expect.anything());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Back to intent' })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText('This review is no longer pending')).not.toBeInTheDocument();
+  });
+
   it('tells the reader an answered task is no longer pending and links back', async () => {
     get.mockResolvedValue(withGate(questionGate('answered'), 'RUNNING'));
     renderAt('/space/p1/intent/i1/review/q-e8d7011b');
