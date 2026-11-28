@@ -123,7 +123,8 @@ function MembersTabContent({ projectId, userRole }: Props) {
   const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [userSearch, setUserSearch] = useState('');
-  const [selectedUser, setSelectedUser] = useState<AssignableUser | null>(null);
+  const [selectedUsers, setSelectedUsers] = useState<AssignableUser[]>([]);
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -180,38 +181,71 @@ function MembersTabContent({ projectId, userRole }: Props) {
 
   const openAddMemberModal = () => {
     setShowAddMember(true);
-    setSelectedUser(null);
+    setSelectedUsers([]);
+    setAddMemberError(null);
     setUserSearch('');
     setNewMemberRole('member');
     loadAssignableUsers();
   };
 
+  const selectedUserIds = new Set(selectedUsers.map((u) => u.userId));
   const filteredUsers = assignableUsers.filter((u) => {
+    if (selectedUserIds.has(u.userId)) return false;
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
+  // Nothing typed and nothing left to offer: every available identity is selected.
+  const allUsersSelected = !userSearch && assignableUsers.length > 0 && filteredUsers.length === 0;
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedUser) return;
+    if (selectedUsers.length === 0) return;
     setError(null);
+    setAddMemberError(null);
     setAddingMember(true);
+    // The API adds one member per request. Each selected identity is added in
+    // turn; any that fail stay selected so the Owner can see why and retry.
+    const failed: { user: AssignableUser; message: string }[] = [];
     try {
-      const added = await projectsService.addMember(projectId, {
-        userId: selectedUser.userId,
-        email: selectedUser.email,
-        role: newMemberRole,
-      });
-      setMembers((current) => [...current, added]);
-      setResponsibilitiesVersion((version) => version + 1);
-      setShowAddMember(false);
-      setSelectedUser(null);
-      setUserSearch('');
-      setNewMemberRole('member');
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add member');
+      for (const user of selectedUsers) {
+        try {
+          const added = await projectsService.addMember(projectId, {
+            userId: user.userId,
+            email: user.email,
+            role: newMemberRole,
+          });
+          setMembers((current) => [...current, added]);
+        } catch (err) {
+          failed.push({
+            user,
+            message: err instanceof Error ? err.message : 'Failed to add member',
+          });
+        }
+      }
+      const failedIds = new Set(failed.map(({ user }) => user.userId));
+      if (failed.length < selectedUsers.length) {
+        setResponsibilitiesVersion((version) => version + 1);
+        setAssignableUsers((current) =>
+          current.filter((u) => !selectedUserIds.has(u.userId) || failedIds.has(u.userId)),
+        );
+      }
+      if (failed.length === 0) {
+        setShowAddMember(false);
+        setSelectedUsers([]);
+        setUserSearch('');
+        setNewMemberRole('member');
+      } else {
+        setSelectedUsers(failed.map(({ user }) => user));
+        setAddMemberError(
+          selectedUsers.length === 1
+            ? failed[0].message
+            : `Could not add ${failed.length} of ${selectedUsers.length}: ${failed
+                .map(({ user, message }) => `${user.email} (${message})`)
+                .join('; ')}`,
+        );
+      }
+      if (failed.length < selectedUsers.length) await load();
     } finally {
       setAddingMember(false);
     }
@@ -669,111 +703,127 @@ function MembersTabContent({ projectId, userRole }: Props) {
       </Dialog>
 
       {/* Add Member Dialog */}
-      <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
+      <Dialog
+        open={showAddMember}
+        onOpenChange={(open) => {
+          // Stay open while adding, so a failure is not lost in a closed dialog.
+          if (!open && addingMember) return;
+          setShowAddMember(open);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <form onSubmit={handleAddMember}>
             <DialogHeader>
               <DialogTitle>Add Member</DialogTitle>
               <DialogDescription>
-                Pick an available identity and assign them a role on this space.
+                Pick one or more available identities and assign them a role on this space.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-1.5">
-                <Label>User</Label>
-                {selectedUser ? (
-                  <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
-                        {(selectedUser.displayName || selectedUser.email).charAt(0).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{selectedUser.email}</p>
-                        <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-                          {selectedUser.identitySource === 'sso' ? (
-                            <Building2 className="h-3 w-3 shrink-0" />
-                          ) : (
-                            <UserRound className="h-3 w-3 shrink-0" />
-                          )}
-                          <span className="truncate">
-                            {selectedUser.displayName
-                              ? `${selectedUser.displayName} · ${identityLabel(selectedUser)}`
-                              : identityLabel(selectedUser)}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="ml-2 h-6 w-6 text-muted-foreground"
-                      onClick={() => {
-                        setSelectedUser(null);
-                        setUserSearch('');
-                      }}
-                      disabled={addingMember}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="relative" ref={userDropdownRef}>
-                    <Input
-                      value={userSearch}
-                      onChange={(e) => {
-                        setUserSearch(e.target.value);
-                        setShowUserDropdown(true);
-                      }}
-                      onFocus={() => setShowUserDropdown(true)}
-                      placeholder={loadingUsers ? 'Loading users...' : 'Search by email or name...'}
-                      disabled={addingMember || loadingUsers}
-                    />
-                    {showUserDropdown && !loadingUsers && (
-                      <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
-                        {filteredUsers.length === 0 ? (
-                          <div className="px-3 py-2 text-sm text-muted-foreground">
-                            {assignableUsers.length === 0
-                              ? 'No users available'
-                              : 'No matching users'}
+                <Label htmlFor="add-member-user-search">Users</Label>
+                {selectedUsers.length > 0 && (
+                  <ul aria-label="Selected users" className="max-h-48 space-y-1.5 overflow-y-auto">
+                    {selectedUsers.map((u) => (
+                      <li
+                        key={u.userId}
+                        className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                            {(u.displayName || u.email).charAt(0).toUpperCase()}
                           </div>
-                        ) : (
-                          filteredUsers.map((u) => (
-                            <button
-                              key={u.userId}
-                              type="button"
-                              onClick={() => {
-                                setSelectedUser(u);
-                                setUserSearch('');
-                                setShowUserDropdown(false);
-                              }}
-                              className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent"
-                            >
-                              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
-                                {(u.displayName || u.email).charAt(0).toUpperCase()}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="truncate text-sm">{u.email}</p>
-                                <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-                                  {u.identitySource === 'sso' ? (
-                                    <Building2 className="h-3 w-3 shrink-0" />
-                                  ) : (
-                                    <UserRound className="h-3 w-3 shrink-0" />
-                                  )}
-                                  <span className="truncate">
-                                    {u.displayName
-                                      ? `${u.displayName} · ${identityLabel(u)}`
-                                      : identityLabel(u)}
-                                  </span>
-                                </p>
-                              </div>
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{u.email}</p>
+                            <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+                              {u.identitySource === 'sso' ? (
+                                <Building2 className="h-3 w-3 shrink-0" />
+                              ) : (
+                                <UserRound className="h-3 w-3 shrink-0" />
+                              )}
+                              <span className="truncate">
+                                {u.displayName
+                                  ? `${u.displayName} · ${identityLabel(u)}`
+                                  : identityLabel(u)}
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Remove ${u.email} (${identityLabel(u)})`}
+                          className="ml-2 h-6 w-6 text-muted-foreground"
+                          onClick={() =>
+                            setSelectedUsers((current) =>
+                              current.filter((s) => s.userId !== u.userId),
+                            )
+                          }
+                          disabled={addingMember}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
+                <div className="relative" ref={userDropdownRef}>
+                  <Input
+                    id="add-member-user-search"
+                    value={userSearch}
+                    onChange={(e) => {
+                      setUserSearch(e.target.value);
+                      setShowUserDropdown(true);
+                    }}
+                    onFocus={() => setShowUserDropdown(true)}
+                    placeholder={loadingUsers ? 'Loading users...' : 'Search by email or name...'}
+                    disabled={addingMember || loadingUsers}
+                  />
+                  {showUserDropdown && !loadingUsers && !addingMember && !allUsersSelected && (
+                    <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
+                      {filteredUsers.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-muted-foreground">
+                          {assignableUsers.length === 0
+                            ? 'No users available'
+                            : 'No matching users'}
+                        </div>
+                      ) : (
+                        filteredUsers.map((u) => (
+                          <button
+                            key={u.userId}
+                            type="button"
+                            onClick={() => {
+                              // Keep the list open so several identities can be picked in a row.
+                              setSelectedUsers((current) => [...current, u]);
+                              setUserSearch('');
+                            }}
+                            className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent"
+                          >
+                            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
+                              {(u.displayName || u.email).charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm">{u.email}</p>
+                              <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+                                {u.identitySource === 'sso' ? (
+                                  <Building2 className="h-3 w-3 shrink-0" />
+                                ) : (
+                                  <UserRound className="h-3 w-3 shrink-0" />
+                                )}
+                                <span className="truncate">
+                                  {u.displayName
+                                    ? `${u.displayName} · ${identityLabel(u)}`
+                                    : identityLabel(u)}
+                                </span>
+                              </p>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="add-member-role">Role</Label>
@@ -795,6 +845,11 @@ function MembersTabContent({ projectId, userRole }: Props) {
                 </Select>
                 <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTIONS[newMemberRole]}</p>
               </div>
+              {addMemberError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {addMemberError}
+                </p>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -805,8 +860,12 @@ function MembersTabContent({ projectId, userRole }: Props) {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={addingMember || !selectedUser}>
-                {addingMember ? 'Adding...' : 'Add Member'}
+              <Button type="submit" disabled={addingMember || selectedUsers.length === 0}>
+                {addingMember
+                  ? 'Adding...'
+                  : selectedUsers.length > 1
+                    ? `Add ${selectedUsers.length} Members`
+                    : 'Add Member'}
               </Button>
             </DialogFooter>
           </form>
