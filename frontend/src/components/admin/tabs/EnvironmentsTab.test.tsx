@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -899,6 +899,279 @@ describe('EnvironmentsTab', () => {
     expect(screen.getByText(/Accepted by admin@example.com/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /CVE-2026-42010/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review findings' })).not.toBeInTheDocument();
+  });
+
+  const findingsRevision = (scan: {
+    severityCounts?: Record<string, number>;
+    findingsTruncated?: boolean;
+    incomplete?: boolean;
+  }) => {
+    const finding = (id: string, severity: string) => ({
+      id,
+      severity,
+      packageName: 'glibc',
+      packageVersion: '2.41',
+      uri: null,
+    });
+    return {
+      ...revision,
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: scanFindings.imageDigest,
+      // Stored before the API ordered IDs by number.
+      scanFindings: {
+        ...scanFindings,
+        severityCounts: { CRITICAL: 1, HIGH: 2, LOW: 1 },
+        findings: [
+          finding('CVE-2026-9', 'LOW'),
+          finding('CVE-2026-58055', 'HIGH'),
+          finding('CVE-2026-6238', 'HIGH'),
+          finding('CVE-2026-1', 'CRITICAL'),
+        ],
+        ...scan,
+      },
+    };
+  };
+  const renderFindings = async (publishedRevision: ReturnType<typeof findingsRevision>) => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : { environment: publishedEnvironment, revisions: [publishedRevision], publishedRevision },
+    );
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+  };
+
+  it('shows the findings total and says when the list is complete', async () => {
+    await renderFindings(findingsRevision({}));
+
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).toHaveTextContent('1 Critical · 2 High · 1 Low');
+    expect(header).toHaveTextContent('All findings shown. One row per affected package.');
+    expect(screen.getAllByText(/^CVE-2026-/).map((element) => element.textContent)).toEqual([
+      'CVE-2026-1',
+      'CVE-2026-6238',
+      'CVE-2026-58055',
+      'CVE-2026-9',
+    ]);
+  });
+
+  it('keeps the truncated-list warning and the ECR link', async () => {
+    await renderFindings(findingsRevision({ findingsTruncated: true }));
+
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).not.toHaveTextContent('All findings shown');
+    expect(header).toHaveTextContent('One row per affected package.');
+    expect(screen.getByText(/may not hold every finding/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View all findings in ECR/ })).toBeInTheDocument();
+  });
+
+  it('says the total of an incomplete scan is a minimum', async () => {
+    await renderFindings(findingsRevision({ findingsTruncated: true, incomplete: true }));
+
+    expect(
+      screen.getByRole('heading', { name: 'Security findings (at least 4)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/these counts are partial/)).toBeInTheDocument();
+  });
+
+  it('counts the rows when the scan has no severity counts, and names unknown severities', async () => {
+    await renderFindings(findingsRevision({ severityCounts: {} }));
+    expect(screen.getByRole('heading', { name: 'Security findings (4)' })).toBeInTheDocument();
+    cleanup();
+
+    await renderFindings(findingsRevision({ severityCounts: { HIGH: 3, NEGLIGIBLE: 1 } }));
+    const header = screen.getByRole('heading', { name: 'Security findings (4)' }).parentElement!;
+    expect(header).toHaveTextContent('3 High · 1 NEGLIGIBLE');
+  });
+
+  it('keeps the evidence open while the revisions refresh', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    const publishedDetail = {
+      environment: publishedEnvironment,
+      revisions: [publishedRevision],
+      publishedRevision,
+    };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : publishedDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    const calls = get.mock.calls.length;
+    let finishRefresh: (value: unknown) => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishRefresh = () => resolve(publishedDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+
+    expect(get).toHaveBeenCalledTimes(calls + 1);
+    expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    finishRefresh(publishedDetail);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+        'aria-disabled',
+        'false',
+      ),
+    );
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps definition edits made while the revisions refresh', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    const publishedDetail = {
+      environment: publishedEnvironment,
+      revisions: [publishedRevision],
+      publishedRevision,
+    };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : publishedDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await screen.findByRole('button', { name: 'Refresh revisions' });
+    let finishRefresh: () => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishRefresh = () => resolve(publishedDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+    await user.click(screen.getByRole('tab', { name: /Definition/ }));
+    const name = screen.getByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Edited during refresh');
+
+    finishRefresh();
+    await user.click(screen.getByRole('tab', { name: /Revisions/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh revisions' })).toHaveAttribute(
+        'aria-disabled',
+        'false',
+      ),
+    );
+    await user.click(screen.getByRole('tab', { name: /Definition/ }));
+
+    expect(screen.getByLabelText('Name')).toHaveValue('Edited during refresh');
+  });
+
+  it('keeps definition edits made while a status poll is pending', async () => {
+    const user = userEvent.setup();
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    const buildingEnvironment = { ...custom, status: 'BUILDING' };
+    const buildingRevision = { ...revision, status: 'BUILDING' };
+    const buildingDetail = {
+      environment: buildingEnvironment,
+      revisions: [buildingRevision],
+      publishedRevision: null,
+    };
+    list.mockResolvedValue([buildingEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : buildingDetail,
+    );
+    const poll = () => {
+      const call = setIntervalSpy.mock.calls.filter(([, delay]) => delay === 8000).at(-1);
+      if (!call) throw new Error('No status poll is registered');
+      (call[0] as () => void)();
+    };
+
+    try {
+      render(<EnvironmentsTab />);
+      await screen.findByRole('button', { name: 'Refresh revisions' });
+      let finishPoll: () => void = () => undefined;
+      get.mockImplementationOnce(
+        () => new Promise((resolve) => (finishPoll = () => resolve(buildingDetail))),
+      );
+      act(poll);
+      await user.click(screen.getByRole('tab', { name: /Definition/ }));
+      const name = screen.getByLabelText('Name');
+      await user.clear(name);
+      await user.type(name, 'Edited during poll');
+
+      await act(async () => finishPoll());
+
+      expect(screen.getByLabelText('Name')).toHaveValue('Edited during poll');
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it('keeps the evidence open after a revision action reloads the environment', async () => {
+    const user = userEvent.setup();
+    const readyEnvironment = { ...custom, status: 'READY' };
+    const readyRevision = { ...revision, status: 'READY', scanFindings };
+    const readyDetail = {
+      environment: readyEnvironment,
+      revisions: [readyRevision],
+      publishedRevision: null,
+    };
+    list.mockResolvedValue([readyEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard' ? standardDetail : readyDetail,
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    const calls = get.mock.calls.length;
+    let finishReload: () => void = () => undefined;
+    get.mockImplementationOnce(
+      () => new Promise((resolve) => (finishReload = () => resolve(readyDetail))),
+    );
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(calls + 1));
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    finishReload();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publish' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('shows why a refresh failed and keeps the revision on screen', async () => {
+    const user = userEvent.setup();
+    const publishedEnvironment = { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' };
+    const publishedRevision = { ...revision, status: 'PUBLISHED', scanFindings };
+    list.mockResolvedValue([publishedEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : { environment: publishedEnvironment, revisions: [publishedRevision], publishedRevision },
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    get.mockRejectedValueOnce(new Error('Service unavailable'));
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+
+    expect(await screen.findByText('Service unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    await user.click(screen.getByRole('button', { name: 'Refresh revisions' }));
+    await waitFor(() => expect(screen.queryByText('Service unavailable')).not.toBeInTheDocument());
   });
 
   it('builds advanced settings with structured rows', async () => {
