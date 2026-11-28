@@ -43,6 +43,7 @@ nav = [
     "using-the-platform/customer-mcp-servers.md",
   ] },
   { "Development" = [
+    "development/local-frontend.md",
     "development/demo-deployment.md",
     "development/testing.md",
     "development/membership-migration.md",

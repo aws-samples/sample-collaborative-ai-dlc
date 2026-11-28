@@ -2,9 +2,86 @@
 
 This guide takes you from zero to a running instance of AIDLC Collaborative. The platform requires AWS infrastructure for authentication, APIs, and agent execution, so setup involves both local configuration and cloud deployment.
 
-## Terraform variables at a glance
+## Managed installation
 
-All 60 deployment inputs are listed below. Select a variable for its default, allowed values, behavior, and examples on this page. For a first installation, start with [Managed installation](#managed-installation) or [Advanced manual installation](#advanced-manual-installation). See [Terraform variable details](#terraform-variable-details) for where to save configuration changes.
+Complete the [prerequisites](prerequisites.md) first. The installer creates the AWS infrastructure, your administrator account, and the web application.
+
+Already have a deployment? See [Updating a deployment](#updating-a-deployment).
+
+### 1. Download the installer
+
+Download the script and read it before running it.
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+less /tmp/aidlc-install.sh
+```
+
+### 2. Run the installer
+
+**Optional (but recommended): customize settings before installing.** Create or edit the configuration file for your deployment (`dev` in this example):
+
+```bash
+mkdir -p ~/.config/collaborative-ai-dlc/terraform/environments
+nano ~/.config/collaborative-ai-dlc/terraform/environments/dev.tfvars
+```
+
+Available settings are listed in the [configuration reference](#configuration-reference). If you changed the default configuration location, use the path described in [Installer files](#installer-files).
+
+**Start the installation**
+
+Replace the three placeholders below:
+
+- `<aws-profile>`: the AWS CLI profile you configured in the prerequisites.
+- `<aws-region>`: the AWS Region where you want to install the application, with the services required by the prerequisites.
+- `<administrator-email>`: the email address you will use to sign in.
+
+```bash
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
+```
+
+This example creates a deployment named `dev`. For production, replace `dev` with exactly [`prod`](#environment).
+
+<span id="proxy-settings"></span>
+
+If you are behind a proxy, set these variables before downloading or running the installer. Replace `http://proxy.example.com:8080` with your proxy address:
+
+```bash
+export HTTP_PROXY=http://proxy.example.com:8080
+export HTTPS_PROXY=http://proxy.example.com:8080
+export NO_PROXY=localhost,127.0.0.1
+
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
+```
+
+The installer also uses these settings when building container images. Lowercase names such as `https_proxy` work too. The same applies when updating an installation.
+
+The installer selects the newest available release, which may be a preview release. To choose a specific version, see [Choose a release version](#choose-a-release-version).
+
+### 3. Set your password and sign in
+
+Follow the installer's prompts. When it asks for your administrator password, type it and press **Enter**. The characters do not appear as you type, and the installer does not save the password.
+
+When installation finishes, open the **Application URL** printed in the terminal. Sign in with the administrator email and password you supplied.
+
+You can now [add users](#users-and-access) and [connect your Git and issue-tracking providers](#configure-provider-oauth-apps). The web application is already deployed; [frontend setup](#set-up-the-frontend) covers branding and local development.
+
+<span id="terraform-variables-at-a-glance"></span>
+
+## Configuration reference
+
+All deployment inputs are listed below. Configure them in `~/.config/collaborative-ai-dlc/terraform/environments/<environment>.tfvars` for a [managed installation](#managed-installation), or `terraform/environments/<environment>.tfvars` in your repository checkout for a [manual installation](#advanced-manual-installation). Replace `<environment>` with your deployment name, such as `dev`. The managed path is the default; see [Installer files](#installer-files) if you changed it.
 
 | Variable                                                                                      | Description                                                                  |
 | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -69,194 +146,88 @@ All 60 deployment inputs are listed below. Select a variable for its default, al
 | [`yjs_image_tag`](#yjs_image_tag)                                                             | Use a pre-built Yjs ECR image instead of a local build.                      |
 | [`yjs_scaling`](#yjs_scaling)                                                                 | Size, safeguard, and optionally autoscale collaboration workers.             |
 
-!!! warning "V1 sprints in v2"
+## Advanced manual installation
 
-    V1 sprints are view-only in v2. Continue active v1 work with the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0), then upgrade after the sprint is complete.
+Before deploying, review [production environment naming](#environment), [Public ECR permissions](#public-ecr-base-image-authentication), and any [proxy settings](#proxy-settings). To build images in CI, see [pre-built container images](#pre-built-container-images).
 
-## Managed installation
+### 1. Clone the repository
 
-Download and inspect the installer, then run it with your AWS profile, region, environment, and first administrator:
-
-```bash
-curl -fsSLo /tmp/aidlc-install.sh \
-  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
-less /tmp/aidlc-install.sh
-bash /tmp/aidlc-install.sh install \
-  --profile <aws-profile> \
-  --region <aws-region> \
-  --environment dev \
-  --admin <administrator-email>
-```
-
-For a managed install or update behind an HTTP proxy, export the proxy settings
-before downloading or running the installer:
+Clone the repository and set the AWS profile and region independently from the logical deployment environment:
 
 ```bash
-export HTTP_PROXY=http://proxy.example.com:8080
-export HTTPS_PROXY=http://proxy.example.com:8080
-export NO_PROXY=localhost,127.0.0.1
-
-curl -fsSLo /tmp/aidlc-install.sh \
-  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
-bash /tmp/aidlc-install.sh install \
-  --profile <aws-profile> \
-  --region <aws-region> \
-  --environment dev \
-  --admin <administrator-email>
+git clone https://github.com/aws-samples/sample-collaborative-ai-dlc.git
+cd sample-collaborative-ai-dlc
+export AWS_PROFILE=<aws-profile>
+export AWS_REGION=<aws-region>
 ```
 
-The installer passes non-empty standard proxy variables, including lowercase
-variants, to both Docker Buildx builds. It adds no proxy build arguments in a
-non-proxy environment. Set `TF_VAR_docker_build_args` to a JSON object to
-override auto-detection. These values are hidden in Terraform CLI output but
-remain in saved plans and Terraform state, so protect both and keep the backend
-encrypted and access-restricted.
+### 2. Configure the deployment
 
-The password prompt is silent and the permanent password is never stored. The installer keeps immutable tagged checkouts under the XDG data directory, keeps Terraform configuration under the XDG config directory, and only changes `current` after infrastructure, administrator setup, and frontend deployment all succeed.
-
-Use the same script to inspect or update the deployment:
+Bootstrap creates `terraform/environments/dev.s3.tfbackend` for the `dev` deployment:
 
 ```bash
-bash /tmp/aidlc-install.sh status
-bash /tmp/aidlc-install.sh versions
-bash /tmp/aidlc-install.sh update
+./scripts/bootstrap.sh dev
+cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ```
 
-Preview and stable tags are listed by default. Install and update select the highest version by SemVer precedence unless `--version` is explicit; stable `2.0.0` supersedes `2.0.0-preview0`. Downgrades still require `--allow-downgrade`.
+Edit `terraform/environments/dev.tfvars` using the [configuration reference](#configuration-reference).
 
-`update` stops with `Already on AI-DLC v<version>.` when the release is unchanged. To change a Terraform variable of a managed deployment, edit `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc/terraform/environments/<environment>.tfvars` and deploy it with `--reapply`, which also deploys an unchanged release:
-
-```bash
-bash /tmp/aidlc-install.sh update --reapply
-```
-
-The installer keeps `environment`, `aws_region` and the custom-domain values in that file equal to its own configuration, so change those through its options.
-
-### Test an unreleased branch
-
-Testers can explicitly track `aidlc-v2` before a release tag exists:
-
-```bash
-curl -fsSLo /tmp/aidlc-install.sh \
-  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/aidlc-v2/scripts/install.sh
-
-bash /tmp/aidlc-install.sh install \
-  --ref aidlc-v2 \
-  --profile <aws-profile> \
-  --region <aws-region> \
-  --environment v2-test \
-  --admin <administrator-email>
-```
-
-This is a non-release mode. The installer resolves the branch to an immutable commit snapshot, records the tracked branch, and follows newer branch commits when `update` runs. Normal installations continue to require immutable version tags.
-
-### AWS WAF
-
-[AWS WAF](https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html) (Web Application Firewall) is optional and disabled by default.
-To create web ACLs for CloudFront, the REST API Gateway stage, and the Cognito user pool, set:
-
-```hcl
-enable_waf = true
-```
-
-The ACLs use the AWS-managed Common Rule Set, Known Bad Inputs, and Amazon IP Reputation rule groups.
-With `enable_waf = true`, the shared regional ACL also blocks application REST API requests with a missing or incorrect `X-Origin-Verify` header, including direct requests with a valid Cognito JWT. The rule checks URL-decoded paths containing `/api`, which covers every application REST route with or without the stage prefix. Cognito's supported login and token paths do not match this condition, so they do not require the header. CloudFront injects the generated secret for every request to the REST API origin, including OPTIONS preflight and OAuth callbacks. A correct header continues through the managed rules and existing authentication and application authorization checks.
-
-This retains two ACLs: one for CloudFront and one shared by API Gateway and Cognito. The origin check adds one WAF rule (currently $1/month, prorated hourly), with no additional ACL or managed rule groups. New REST routes must remain under `/api` or the rule's path scope must be updated.
-
-With `enable_waf = false` (the default), no WAF ACLs or origin-header restriction are enforced. Direct REST API requests remain available with the existing authentication and authorization controls. The WebSocket API is unaffected by the REST API origin check.
-
-This is a secret-based access restriction: the REST API endpoint remains public, and anyone who obtains the secret can satisfy the origin check. Keep Terraform state and access to the CloudFront/WAF configuration restricted. The secret is not included in the frontend bundle. WAF request sampling is disabled and WAF request logging is not configured; if you enable WAF logging separately, redact the `x-origin-verify` header.
-
-Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
-A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
-
-#### Building-block bodies
-
-Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
-
-- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`), with `{type}` matched in any case as the API accepts it. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
-- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
-
-The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
-
-### Custom domain
-
-Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
-
-Every public path — the SPA, `/api/*`, `/ws` and `/yjs/*` — is served by a single CloudFront distribution, so a custom domain needs exactly one certificate and one distribution change. There is no API Gateway custom domain or load balancer certificate to configure. Enterprise SSO uses a separate Cognito managed-login domain for federation; it does not serve the application.
-
-The certificate **must be in `us-east-1`** regardless of the deployment region, because CloudFront accepts viewer certificates from no other region.
-
-#### Bring your own certificate
-
-For centrally managed, imported, or wildcard certificates, and for DNS that lives outside Route53 or in another AWS account. The certificate must already be `ISSUED` in the deployment account and `us-east-1`, cover every hostname, and chain to a publicly trusted certificate authority supported by CloudFront. A private-CA certificate trusted only by your organization's browsers does not meet CloudFront's [alternate-domain requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html).
-
-```bash
-bash /tmp/aidlc-install.sh install \
-  --profile <aws-profile> \
-  --region <aws-region> \
-  --environment dev \
-  --admin <administrator-email> \
-  --domain aidlc.example.com \
-  --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id>
-```
-
-The installer prints the DNS records to create when it finishes. Add `--hosted-zone-id` alongside `--certificate-arn` to keep your own certificate but let Terraform manage the records.
-
-#### Terraform-managed certificate
-
-The installer uses a Route53 hosted zone in the deployment account. Terraform requests the certificate, publishes the validation records, waits for issuance, and creates the A/AAAA alias records. For cross-account Route53 with a manual deployment, also set [dns_role_arn](#dns_role_arn).
-
-```bash
-bash /tmp/aidlc-install.sh install \
-  --profile <aws-profile> \
-  --region <aws-region> \
-  --environment dev \
-  --admin <administrator-email> \
-  --domain aidlc.example.com \
-  --hosted-zone-id Z1234567890ABC
-```
-
-#### Multiple hostnames
-
-Additional hostnames for the same deployment use `--domain-alias`, repeated as needed:
-
-```bash
-  --domain aidlc.example.com \
-  --domain-alias www.aidlc.example.com
-```
-
-`--domain` is canonical: it is the hostname used for the OAuth redirect URIs and baked into the frontend build, so there can only be one. Aliases are additional names CloudFront answers on. The CloudFront domain also keeps working, which is useful when DNS is misconfigured.
-
-Before touching AWS the installer verifies that the certificate is in `us-east-1`, is `ISSUED`, and covers every hostname (wildcards included); that the hosted zone exists and contains every hostname; and that no other CloudFront distribution already claims the hostnames. Each of these would otherwise fail several minutes into a distribution update.
-
-The same flags work on `update`, and `--no-domain` removes a configured domain.
-
-#### Without the installer
-
-Invoking `deploy-terraform.sh` and `deploy-frontend.sh` directly works the same way — set the variables in your environment's `.tfvars` instead of passing flags:
-
-```hcl
-# terraform/environments/dev.tfvars
-app_domain         = "aidlc.example.com"
-app_domain_aliases = ["www.aidlc.example.com"] # optional
-
-# Supply either of the next two, or both. With only a certificate ARN you
-# manage DNS yourself; with only a zone ID Terraform requests the certificate
-# as well; with both it uses your certificate and manages the records.
-acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/<id>"
-route53_zone_id     = ""
-```
-
-Then apply and rebuild the frontend, **in that order**:
+### 3. Deploy the application
 
 ```bash
 ./scripts/deploy-terraform.sh dev
 ./scripts/deploy-frontend.sh dev
 ```
 
-Both steps are required. Terraform updates the distribution, the OAuth redirect URIs and the CORS allowlists; the frontend then has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
+The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
+
+Unlike the managed installer, nothing here rewrites `dev.tfvars` for you — it is yours to edit, and the scripts only read it.
+
+### Review a plan before applying
+
+Export proxy variables before running `--phase plan`. Terraform resolves
+`TF_VAR_docker_build_args` while planning and stores the value in the saved
+plan, so exporting or changing proxy variables before `--phase apply` has no
+effect.
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+The plan is rejected if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table. The check runs in both phases, so a saved plan is re-inspected before it is applied.
+
+Manual deployments honor the same [proxy variables](#proxy-settings) documented for the managed
+installer. You can also define `docker_build_args` in the `.tfvars` file.
+
+### Deployment environment variables
+
+These environment variables are useful when iterating:
+
+| Variable                                                     | Effect                                                                                                     |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| <code style="white-space: nowrap">AIDLC_SKIP_NPM_CI=1</code> | Skips the root `npm ci` before planning. Saves a lot of time on repeat runs when dependencies are current. |
+| <code style="white-space: nowrap">AIDLC_KEEP_PLAN=1</code>   | Keeps the plan file after a successful apply instead of deleting it.                                       |
+| <code style="white-space: nowrap">AIDLC_TFVARS_FILE</code>   | Path to an alternative `.tfvars`, overriding the `<environment>.tfvars` convention.                        |
+| <code style="white-space: nowrap">AIDLC_BACKEND_FILE</code>  | Path to an alternative `.s3.tfbackend`.                                                                    |
+| <code style="white-space: nowrap">AIDLC_CONFIG_DIR</code>    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
+
+### Skip updating built-in blocks and workflows
+
+For infrastructure-only changes that do not modify the upstream AI-DLC pin,
+baseline blocks, or default workflow, skip the post-apply reseed:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
+
+After Terraform applies, the deployment script initializes the scoped agent
+authentication inventory on both fresh installs and upgrades. This idempotent
+step also runs with `--skip-seed`; a failure fails deployment. If you apply
+Terraform directly, follow the [inventory initialization instructions](../development/agent-authentication-foundation.md#scoped-reviews)
+before saving personal or space credentials.
+
+### Command-line overrides
 
 To override without editing the file — useful for CI, throwaway environments, or trying a hostname before committing to it — pass `--var`, repeated per variable:
 
@@ -280,246 +251,125 @@ To override without editing the file — useful for CI, throwaway environments, 
 
 Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v1-runtime cleanup step reads those three from the file directly and would not see a `--var` override.
 
-!!! warning "A production environment must be named exactly `prod`"
-
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger default Yjs collaboration containers, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run. DynamoDB, Neptune and Cognito deletion protection is controlled separately by [deletion_protection](#deletion_protection), which defaults to `true` in every environment.
-
-    A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
-
 Note that `deploy-frontend.sh` takes no `--var`: it reads Terraform outputs, so it always reflects whatever was actually applied.
 
-!!! warning "The installer's preflight checks do not run on this path"
+### Set up the frontend
 
-    Terraform verifies that the variable combination is coherent and that the certificate ARN is in `us-east-1`, but it cannot check the certificate's status, what hostnames it covers, or whether another CloudFront distribution already claims your hostname. Those failures surface several minutes into the apply — or, for a certificate still pending validation, never fail and simply never work.
+All commands in this section run from the repository root.
 
-    Verify by hand first:
+#### Install dependencies
 
-    ```bash
-    # Must be ISSUED, and the names must cover every hostname
-    # (a wildcard covers one label: *.example.com matches a.example.com only).
-    aws acm describe-certificate \
-      --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id> \
-      --region us-east-1 \
-      --query 'Certificate.{Status:Status,Names:SubjectAlternativeNames}'
+<span id="local-frontend-development"></span>
 
-    # Your hostname must not appear here — CloudFront aliases are globally unique.
-    aws cloudfront list-distributions \
-      --query 'DistributionList.Items[].{Id:Id,Aliases:Aliases.Items}' \
-      --output table
-
-    # If using route53_zone_id, the zone must contain every hostname.
-    aws route53 get-hosted-zone --id Z1234567890ABC --query 'HostedZone.Name'
-    ```
-
-To review the plan before applying — worth doing when adding or removing a domain, since it changes the distribution, the environment variables of every Lambda that handles OAuth or returns CORS headers, and the artifacts bucket CORS rules:
+Only needed for [local frontend development](../development/local-frontend.md) — `deploy-frontend.sh` runs `npm ci` itself.
 
 ```bash
-./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
-./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+npm --prefix frontend install
 ```
 
-Removing a domain is the same edit in reverse: clear all four values back to `""` / `[]`, then run both scripts again. All four have to go together — a leftover certificate ARN or zone ID with an empty `app_domain` is rejected at plan time, on the assumption that it is a half-finished edit rather than an intent to configure a certificate for nothing. Via `--var` that means:
+#### Configure environment variables
+
+`deploy-frontend.sh` generates `frontend/.env` from Terraform outputs before every build, so there is normally nothing to do here. To generate it without building — which is what you want before `npm run dev` — run it directly:
 
 ```bash
-./scripts/deploy-terraform.sh dev \
-  --var app_domain= \
-  --var 'app_domain_aliases=[]' \
-  --var acm_certificate_arn= \
-  --var route53_zone_id=
+./scripts/generate-env.sh dev
 ```
 
-Removing or renaming a domain whose certificate Terraform owns takes about five minutes longer than the distribution update alone. CloudFront releases a certificate asynchronously, so ACM still reports it as in use for a while after the distribution reports `Deployed`, and deleting it too early fails. The apply waits that out before deleting. A supplied `acm_certificate_arn` is never deleted by Terraform and so is not affected.
+It requires `terraform/` to be initialized against the environment's backend, and refuses to run if the initialized backend belongs to a different environment.
 
-#### External DNS
+The generated values all derive from one hostname, `application_domain` — the custom domain when one is configured, otherwise the CloudFront domain:
 
-Terraform only manages records when `--hosted-zone-id` is given. Otherwise create them yourself, pointing at the value the installer prints:
+| Variable                       | Value                              |
+| ------------------------------ | ---------------------------------- |
+| `VITE_APP_ORIGIN`              | `https://<application_domain>`     |
+| `VITE_API_BASE_URL`            | `https://<application_domain>/api` |
+| `VITE_WEBSOCKET_URL`           | `wss://<application_domain>/ws`    |
+| `VITE_YJS_SERVER_URL`          | `wss://<application_domain>/yjs`   |
+| `VITE_AWS_REGION`              | `aws_region` output                |
+| `VITE_AWS_USER_POOL_ID`        | `user_pool_id` output              |
+| `VITE_AWS_USER_POOL_CLIENT_ID` | `user_pool_client_id` output       |
+| `VITE_ENVIRONMENT`             | the environment argument           |
 
-```bash
-terraform -chdir=terraform output -raw dns_target
-```
+Because these are inlined at build time, changing the domain always requires a rebuild — see [Updating a deployment](#updating-a-deployment). `.env.example` exists for reference and for the rare case of pointing a local build at something Terraform doesn't know about.
 
-Use an alias/ANAME record where your provider supports it and a CNAME otherwise. Apex domains require alias records — a CNAME is not valid there. Both `A` and `AAAA` are needed because the distribution is IPv6-enabled. CloudFront accepts the hostname as soon as the certificate covers it, so the apply succeeds before the records exist; the deployment is simply unreachable on that hostname until they are published.
-
-#### Adding a domain to a running deployment
-
-Setting the domain at initial install avoids all of the following. On an existing deployment:
-
-1. Obtain a `us-east-1` certificate covering the hostname, `ISSUED`.
-2. Run `update` with the domain flags. The CloudFront distribution update takes 5–15 minutes.
-3. Create the DNS records if you manage DNS yourself.
-4. The frontend is rebuilt and redeployed automatically — the endpoint URLs are inlined at build time, so a Terraform apply alone is not enough.
-5. Update the **Authorization callback URL** in every configured OAuth provider to the new hostname. GitHub App mode needs no change.
-6. **Every GitLab connection must be reauthorized.** GitLab requires `redirect_uri` on the refresh-token grant and it must match the original authorization request, so changing the canonical hostname invalidates all stored GitLab refresh tokens. GitHub OAuth tokens and Jira connections are unaffected.
-
-`update --no-domain` reverses the change. The CloudFront domain never changes, so it remains a working entry point throughout.
-
-### Enterprise SSO
-
-OIDC and SAML federation, including Microsoft Entra ID and Okta, is configured
-at deployment time rather than in the Admin UI. See [Enterprise SSO](enterprise-sso.md)
-for the installer bootstrap sequence, provider files, and authoritative role
-mapping.
-
-### Adopt an existing v1 deployment
-
-The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
+#### Deploy to S3 and CloudFront
 
 ```bash
-bash /tmp/aidlc-install.sh adopt \
-  --source /path/to/existing-v1-checkout \
-  --environment dev \
-  --profile <aws-profile> \
-  --admin <existing-administrator-email>
-
-bash /tmp/aidlc-install.sh update --version 2.1.0
-```
-
-The update backs up Terraform state and rejects plans that unexpectedly destroy Cognito, Neptune, S3, or persistent DynamoDB resources. Retiring the v1 ECS agent runtime and agent-pool table is expected. The existing administrator receives `platform-admin`. If an update fails, `current` still points to the previous working release.
-
-## Advanced manual installation
-
-Clone the repository and set the AWS profile and region independently from the logical deployment environment:
-
-```bash
-git clone https://github.com/aws-samples/sample-collaborative-ai-dlc.git
-cd sample-collaborative-ai-dlc
-export AWS_PROFILE=<aws-profile>
-export AWS_REGION=<aws-region>
-```
-
-Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment argument is `dev`, not the AWS profile:
-
-```bash
-./scripts/bootstrap.sh dev
-cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
-# Set aws_region = "<aws-region>" in dev.tfvars.
-# For static provider egress IPs, set lambda_vpc_scope = "public-egress".
-# To place every Lambda in the VPC, set lambda_vpc_scope = "all".
-# For a custom domain, also set app_domain plus either acm_certificate_arn or
-# route53_zone_id — see "Custom domain → Without the installer" above.
-./scripts/deploy-terraform.sh dev
 ./scripts/deploy-frontend.sh dev
 ```
 
-Unlike the managed installer, nothing here rewrites `dev.tfvars` for you — it is yours to edit, and the scripts only read it.
+This regenerates `.env`, builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
 
-To review a saved plan before applying:
+#### Branding
 
-Export proxy variables before running `--phase plan`. Terraform resolves
-`TF_VAR_docker_build_args` while planning and stores the value in the saved
-plan, so exporting or changing proxy variables before `--phase apply` has no
-effect.
+A deployment can carry its own logo, wordmark, colours and fonts without changing the source. Unset, the app looks as it does by default.
 
-```bash
-./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
-./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
-```
+1. Put the assets in a folder outside the repository, for example `brand/` holding `brand.css`, `logo.svg`, `wordmark.svg`, `wordmark-dark.svg` and any fonts. Set `AIDLC_BRANDING_DIR` to it, and `deploy-frontend.sh` copies it to `/branding/` in the site.
+2. Point the build at the files with these variables, exported when you run `deploy-frontend.sh`:
 
-The plan is rejected if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table. The check runs in both phases, so a saved plan is re-inspected before it is applied.
-
-Manual deployments honor the same proxy variables documented for the managed
-installer. You can also define `docker_build_args` in the `.tfvars` file.
-
-The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
-
-These environment variables are useful when iterating:
-
-| Variable              | Effect                                                                                                     |
-| --------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `AIDLC_SKIP_NPM_CI=1` | Skips the root `npm ci` before planning. Saves a lot of time on repeat runs when dependencies are current. |
-| `AIDLC_KEEP_PLAN=1`   | Keeps the plan file after a successful apply instead of deleting it.                                       |
-| `AIDLC_TFVARS_FILE`   | Path to an alternative `.tfvars`, overriding the `<environment>.tfvars` convention.                        |
-| `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`.                                                                    |
-| `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
-
-With `lambda_vpc_scope = "public-egress"` or `"all"`, the deployment summary prints the NAT addresses to add to provider allow-lists. Development environments expose one address and production environments expose two; allow-list every address printed. See [Git and Tracker Integration → Static egress IPs](../using-the-platform/git-integration.md#static-egress-ips) for details.
-
-For infrastructure-only changes that do not modify the upstream AI-DLC pin,
-baseline blocks, or default workflow, skip the post-apply reseed:
+| Variable                   | Effect                                                                                          | Default           |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------- |
+| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint                               | none              |
+| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon                              | none              |
+| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                                                     | the wordmark      |
+| `VITE_BRAND_LOGO`          | the app's mark: header icon when there is no wordmark, the Spaces page header, and the tab icon | `/logo.svg`       |
+| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                                              | `AI-DLC`          |
+| `VITE_BRAND_FAVICON`       | browser tab icon                                                                                | the logo          |
+| `VITE_BRAND_TITLE`         | browser tab title                                                                               | the default title |
 
 ```bash
-./scripts/deploy-terraform.sh dev --skip-seed
+export AIDLC_BRANDING_DIR="$PWD/../brand"
+export VITE_BRAND_STYLESHEET=/branding/brand.css
+export VITE_BRAND_WORDMARK=/branding/wordmark.svg
+export VITE_BRAND_WORDMARK_DARK=/branding/wordmark-dark.svg
+export VITE_BRAND_LOGO=/branding/logo.svg
+export VITE_BRAND_NAME="Example Corp"
+./scripts/deploy-frontend.sh dev
 ```
 
-After Terraform applies, the deployment script initializes the scoped agent
-authentication inventory on both fresh installs and upgrades. This idempotent
-step also runs with `--skip-seed`; a failure fails deployment. If you apply
-Terraform directly, follow the [inventory initialization instructions](../development/agent-authentication-foundation.md#scoped-reviews)
-before saving personal or space credentials.
+The theme is CSS variables (`--primary`, `--background`, `--radius`, the sidebar and chart colours, and so on, defined on `:root` and `.dark` in `frontend/src/index.css`). A brand stylesheet overrides them with the same selectors: it loads later, so it wins. Tailwind's colour palette is CSS variables too (`--color-blue-500` and so on), so hard-coded colour classes can follow the brand as well. Relative `url()`s and `@import`s in the stylesheet resolve under `/branding/`.
 
-### Public ECR base-image authentication
+The stylesheet blocks the first render for at most three seconds, so a missing file never stops the app loading. These are build-time settings, so changing them needs a rebuild.
 
-Container builds use the existing digest-pinned Public ECR Node images.
-`deploy-terraform.sh` automatically runs `scripts/with-public-ecr-auth.mjs`
-for `--phase all` and `--phase apply`; a separate plan does not request a token.
-The wrapper requests a fresh token in `us-east-1` using the current deployment
-identity, so that identity needs the
-[Public ECR permissions](prerequisites.md#public-ecr-permissions-for-container-builds).
-
-The wrapper creates a temporary Docker config with restrictive permissions and
-passes its directory as `DOCKER_CONFIG` for the deployment subprocess. The
-locked Terraform Docker provider's Buildx path reads this config for its
-BuildKit auth session, covering AgentCore ARM64, optional AgentCore AMD64, and
-Yjs AMD64. Terraform's existing private ECR `registry_auth` still handles image
-pushes. Existing Docker contexts, proxy settings and other registry helpers are
-retained; only Public ECR uses the fresh token. The caller's Docker config is
-unchanged. The temporary config is removed on completion, failure, SIGINT or
-SIGTERM; a forced kill or host loss can bypass cleanup, so use an ephemeral
-runner or clean abandoned `aidlc-public-ecr-*` temporary directories.
-
-Before running the deployment command, the wrapper checks authenticated GET
-access to the exact manifests named in both Dockerfiles. This catches missing
-permissions, expired/invalid authentication and manifest-access failures before
-apply. It does **not** download or verify every layer, validate platform
-execution, warm the builder cache, or prove connectivity from a separate builder.
-It does not retry Terraform apply.
-
-For direct Terraform use, wrap the saved-plan apply explicitly:
+#### Access the application
 
 ```bash
-node scripts/with-public-ecr-auth.mjs "$PWD" -- \
-  terraform -chdir=terraform apply /tmp/aidlc-dev.tfplan
+terraform -chdir=terraform output -raw application_url
 ```
 
-AWS documents a separate unauthenticated data allowance; a `429 Data limit
-exceeded` response is not necessarily a short burst of requests. Authentication
-removes reliance on anonymous pulls but cannot guarantee freedom from account
-or service limits. If authenticated pulls still encounter limits, record which
-identity and build failed, check the applicable
-[Public ECR quotas](https://docs.aws.amazon.com/AmazonECR/latest/public/public-service-quotas.html),
-and evaluate a separately approved private ECR mirror or pull-through cache.
-That requires repository/cache permissions, lifecycle and cost decisions, and
-verification of the pinned image digests for each architecture. This deployment
-does not provision a mirror or fall back to anonymous Docker Hub pulls.
+Open the domain in your browser to reach the sign-in page.
 
-### Pre-built container images
+## Users and access
 
-By default Terraform builds the AgentCore and Yjs images during apply. To build
-them elsewhere (for example in CI, so they can be scanned before they deploy),
-push them to the deployment's ECR repositories and set their tags:
+The managed installer creates the first administrator. Use these steps to add users or bootstrap an administrator after a manual installation. For federated access, see [Enterprise SSO](#enterprise-sso).
 
-```hcl
-# terraform/environments/dev.tfvars
-agentcore_image_tag = "1.2.3"
-yjs_image_tag       = "1.2.3"
+### Create users
+
+Get the User Pool ID and create a user:
+
+```bash
+terraform -chdir=terraform output user_pool_id
+
+aws cognito-idp admin-create-user \
+  --user-pool-id <user-pool-id> \
+  --username user@example.com \
+  --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true
+
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id <user-pool-id> \
+  --username user@example.com \
+  --group-name member
 ```
 
-| Image     | Repository                   | Build context        | Dockerfile                     | Platform                                                       |
-| --------- | ---------------------------- | -------------------- | ------------------------------ | -------------------------------------------------------------- |
-| AgentCore | `<project>-agentcore-<env>`  | `lambda/`            | `lambda/agentcore/Dockerfile`  | `linux/arm64`, plus `linux/amd64` as `<tag>-amd64` (see below) |
-| Yjs       | `<project>-yjs-server-<env>` | `lambda/yjs-server/` | `lambda/yjs-server/Dockerfile` | `linux/amd64`                                                  |
+Available Cognito groups:
 
-- With `enable_instances_compute = true`, also push the AgentCore amd64 image
-  as `<tag>-amd64`.
-- Each tag is resolved to its digest, and both images deploy by digest, so
-  moving a tag later does not change a running deployment. Treat the tags as
-  write-once: published environment revisions pin the AgentCore digest, and the
-  AgentCore repository has no lifecycle policy (see issue #427).
-- Plan fails if a tag is missing from its repository, so push the images
-  before planning. Terraform creates the repositories, so a new environment
-  needs one apply with the defaults (or a targeted apply of the two
-  `aws_ecr_repository` resources) before switching to pre-built images.
-- Leaving either variable unset (`null`) keeps the build during apply.
+| Group               | Purpose                                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform-admin`    | Platform-wide administration: the **Admin** page (users, agent credentials and models, source control, trackers) and workflow/block authoring |
+| `member`            | Regular platform user                                                                                                                         |
+| `approver`, `owner` | Legacy v1 groups, kept for existing installs; no longer checked by the v2 authorization model                                                 |
+
+Day-to-day access to a space's intents, discussions, and settings is governed by **space membership** (owner / admin / member roles managed per space in **Space Settings → Members**), not by Cognito groups — see [Spaces and settings](../using-the-platform/projects.md).
 
 ### Bootstrap the first platform administrator
 
@@ -549,7 +399,7 @@ A reset needs a verified email address. The installer creates the first administ
 
 Codes are sent with Cognito's default email sender (`email_sending_account = "COGNITO_DEFAULT"`), which Amazon Cognito limits to 50 messages a day per account, invitations included. The auth module does not configure Amazon SES for the user pool, so that limit applies to every reset; once it is reached, reset requests fail until the quota resets.
 
-### Configure provider OAuth apps
+## Configure provider OAuth apps
 
 The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: a platform admin sets one shared connection to an IAM role in the repository account, and every space uses it (see [CodeCommit](#codecommit-code-host) below).
 
@@ -561,7 +411,7 @@ For GitHub and GitLab a single OAuth app serves both the code host and that prov
 terraform -chdir=terraform output -raw application_domain
 ```
 
-#### GitHub (code host + GitHub Issues)
+### GitHub (code host + GitHub Issues)
 
 Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each space chooses its authentication type.
 
@@ -584,11 +434,7 @@ For **GitHub App**:
 3. Install the App on each personal account or organization whose repositories spaces may bind.
 4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a space is bound.
 
-### Space-bound source control
-
-Existing spaces must be explicitly bound by an Owner before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
-
-#### GitLab (code host + GitLab Issues)
+### GitLab (code host + GitLab Issues)
 
 1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
 2. Set:
@@ -600,7 +446,7 @@ Existing spaces must be explicitly bound by an Owner before intents can run agai
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
-#### CodeCommit (code host)
+### CodeCommit (code host)
 
 Nothing to register and no secret to store, and no per-user step: one platform admin sets a single shared connection and every space uses it. Two roles are involved.
 
@@ -724,7 +570,7 @@ This uses the same code path. Do not use `NotResource`: it would open every repo
 
 **The platform admin** then goes to **Admin → Source Control → AWS CodeCommit**, pastes the role ARN and region, and clicks **Test & save**. The platform assumes the role with the deployment external ID, makes one `ListRepositories` call to prove the trust, and stores the connection. A trust failure returns a hint and stores nothing. From then on every space picks CodeCommit repositories from the usual list, with no ARN, region or IAM to supply. The deployment region does not need to match the repositories' region: the git host and API endpoint are derived from each repository's ARN. The connection is one region: a space can bind only repositories in that region, even if the role allows more. Changing the region does not move existing bindings: they keep working in their region. A save that still lists a repository of the old region is refused, and the old binding stays; pick repositories in the new region to move the space.
 
-#### Bitbucket (code host)
+### Bitbucket (code host)
 
 1. Open **Bitbucket → Workspace settings → OAuth consumers → Add consumer**.
 2. Set:
@@ -736,7 +582,7 @@ This uses the same code path. Do not use `NotResource`: it would open every repo
 
 Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`), requested automatically by the platform. The `email` scope is required for commit attribution — enable the **Email** permission on the consumer, otherwise the connection is reported as needing reauthorization. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time from the stored refresh token, so long-running construction jobs keep a valid token and users don't need to reconnect periodically.
 
-#### Jira Cloud
+### Jira Cloud
 
 1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.
 2. Under **Permissions**, add the **Jira API** with scopes:
@@ -749,6 +595,8 @@ Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `reposi
 5. In the deployed app, sign in and open **Admin → Trackers → Jira Cloud**. Paste both values and click **Save**.
 
 When upgrading from a release before v2.1.0, add `write:jira-work` to the existing OAuth application and reconnect Jira to grant it. This enables delivery comments; Jira task status is not changed automatically.
+
+### Rotate or provision provider credentials
 
 Rotating credentials later is the same flow — paste new values and **Save** overwrites the stored secret.
 
@@ -774,139 +622,108 @@ Rotating credentials later is the same flow — paste new values and **Save** ov
       --secret-string '{"client_id":"...","client_secret":"..."}'
     ```
 
-### Create users
+### Space-bound source control
 
-Get the User Pool ID and create a user:
-
-```bash
-terraform -chdir=terraform output user_pool_id
-
-aws cognito-idp admin-create-user \
-  --user-pool-id <user-pool-id> \
-  --username user@example.com \
-  --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true
-
-aws cognito-idp admin-add-user-to-group \
-  --user-pool-id <user-pool-id> \
-  --username user@example.com \
-  --group-name member
-```
-
-Available Cognito groups:
-
-| Group               | Purpose                                                                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `platform-admin`    | Platform-wide administration: the **Admin** page (users, agent credentials and models, source control, trackers) and workflow/block authoring |
-| `member`            | Regular platform user                                                                                                                         |
-| `approver`, `owner` | Legacy v1 groups, kept for existing installs; no longer checked by the v2 authorization model                                                 |
-
-Day-to-day access to a space's intents, discussions, and settings is governed by **space membership** (owner / admin / member roles managed per space in **Space Settings → Members**), not by Cognito groups — see [Spaces and settings](../using-the-platform/projects.md).
-
-## Set up the frontend
-
-All commands in this section run from the repository root.
-
-### Install dependencies
-
-Only needed for local development — `deploy-frontend.sh` runs `npm ci` itself.
-
-```bash
-npm --prefix frontend install
-```
-
-### Configure environment variables
-
-`deploy-frontend.sh` generates `frontend/.env` from Terraform outputs before every build, so there is normally nothing to do here. To generate it without building — which is what you want before `npm run dev` — run it directly:
-
-```bash
-./scripts/generate-env.sh dev
-```
-
-It requires `terraform/` to be initialized against the environment's backend, and refuses to run if the initialized backend belongs to a different environment.
-
-The generated values all derive from one hostname, `application_domain` — the custom domain when one is configured, otherwise the CloudFront domain:
-
-| Variable                       | Value                              |
-| ------------------------------ | ---------------------------------- |
-| `VITE_APP_ORIGIN`              | `https://<application_domain>`     |
-| `VITE_API_BASE_URL`            | `https://<application_domain>/api` |
-| `VITE_WEBSOCKET_URL`           | `wss://<application_domain>/ws`    |
-| `VITE_YJS_SERVER_URL`          | `wss://<application_domain>/yjs`   |
-| `VITE_AWS_REGION`              | `aws_region` output                |
-| `VITE_AWS_USER_POOL_ID`        | `user_pool_id` output              |
-| `VITE_AWS_USER_POOL_CLIENT_ID` | `user_pool_client_id` output       |
-| `VITE_ENVIRONMENT`             | the environment argument           |
-
-Because these are inlined at build time, changing the domain always requires a rebuild — see [Updating a deployment](#updating-a-deployment). `.env.example` exists for reference and for the rare case of pointing a local build at something Terraform doesn't know about.
-
-### Deploy to S3 and CloudFront
-
-```bash
-./scripts/deploy-frontend.sh dev
-```
-
-This regenerates `.env`, builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
-
-### Branding
-
-A deployment can carry its own logo, wordmark, colours and fonts without changing the source. Unset, the app looks as it does by default.
-
-1. Put the assets in a folder outside the repository, for example `brand/` holding `brand.css`, `logo.svg`, `wordmark.svg`, `wordmark-dark.svg` and any fonts. Set `AIDLC_BRANDING_DIR` to it, and `deploy-frontend.sh` copies it to `/branding/` in the site.
-2. Point the build at the files with these variables, exported when you run `deploy-frontend.sh`:
-
-| Variable                   | Effect                                                                                          | Default           |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------- |
-| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint                               | none              |
-| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon                              | none              |
-| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                                                     | the wordmark      |
-| `VITE_BRAND_LOGO`          | the app's mark: header icon when there is no wordmark, the Spaces page header, and the tab icon | `/logo.svg`       |
-| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                                              | `AI-DLC`          |
-| `VITE_BRAND_FAVICON`       | browser tab icon                                                                                | the logo          |
-| `VITE_BRAND_TITLE`         | browser tab title                                                                               | the default title |
-
-```bash
-export AIDLC_BRANDING_DIR="$PWD/../brand"
-export VITE_BRAND_STYLESHEET=/branding/brand.css
-export VITE_BRAND_WORDMARK=/branding/wordmark.svg
-export VITE_BRAND_WORDMARK_DARK=/branding/wordmark-dark.svg
-export VITE_BRAND_LOGO=/branding/logo.svg
-export VITE_BRAND_NAME="Example Corp"
-./scripts/deploy-frontend.sh dev
-```
-
-The theme is CSS variables (`--primary`, `--background`, `--radius`, the sidebar and chart colours, and so on, defined on `:root` and `.dark` in `frontend/src/index.css`). A brand stylesheet overrides them with the same selectors: it loads later, so it wins. Tailwind's colour palette is CSS variables too (`--color-blue-500` and so on), so hard-coded colour classes can follow the brand as well. Relative `url()`s and `@import`s in the stylesheet resolve under `/branding/`.
-
-The stylesheet blocks the first render for at most three seconds, so a missing file never stops the app loading. These are build-time settings, so changing them needs a rebuild.
-
-### Access the application
-
-```bash
-terraform -chdir=terraform output -raw application_url
-```
-
-Open the domain in your browser to reach the sign-in page.
-
-## Local frontend development
-
-For iterating on the frontend locally while connected to the deployed AWS backend:
-
-```bash
-./scripts/generate-env.sh dev
-npm --prefix frontend run dev
-```
-
-This starts the Vite development server on `http://localhost:5173`, calling the deployed API, WebSocket and Yjs endpoints. `http://localhost:5173` is already in the CORS allowlist, alongside the deployment's own hostnames.
-
-Two things to expect on a deployment with a custom domain:
-
-- The **Admin** page reports that you are not on the canonical hostname. That is correct and intentional: the OAuth callback URLs it shows are the deployed ones, because those are what the backend actually sends to providers. Paste those, not a `localhost` variant.
-- Provider OAuth flows cannot complete against a local dev server, since the provider redirects the browser to the deployed callback URL. Connect your accounts in the deployed app instead; the tokens are stored per user server-side, so your local session picks them up.
+Existing spaces must be explicitly bound by an Owner before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
 
 ## Updating a deployment
 
-For managed installations, run `bash /tmp/aidlc-install.sh update`. It creates a Terraform state backup and applies the release safeguards automatically. Add `--reapply` to deploy an unchanged release again, for example after editing its `.tfvars` file.
+### Update a managed installation
 
-For advanced manual installations:
+Use the installer script you downloaded during setup. If `/tmp/aidlc-install.sh` is no longer on your computer, [download it again](#1-download-the-installer).
+
+To see your installed version and application URL:
+
+```bash
+bash /tmp/aidlc-install.sh status
+```
+
+To install the newest available release:
+
+```bash
+bash /tmp/aidlc-install.sh update
+```
+
+The installer reuses your saved deployment settings, backs up Terraform state, and updates both the infrastructure and the web application. Its safeguards reject plans that unexpectedly destroy persistent resources.
+
+If that release is already installed, it prints `Already on AI-DLC v<version>.` and stops. To apply configuration changes without waiting for a new release, follow [Change settings on a managed installation](#change-settings-on-a-managed-installation).
+
+### Choose a release version
+
+List the available releases:
+
+```bash
+bash /tmp/aidlc-install.sh versions
+```
+
+The list includes stable releases and preview releases. A preview is an early version of an upcoming release.
+
+By default, `install` and `update` choose the highest version number from that list. For example:
+
+- `2.0.0` is chosen over `2.0.0-preview0`: the finished release takes priority over its preview.
+- `2.1.0-preview0` is chosen over `2.0.0`: a preview with a higher version number takes priority over an older stable release.
+
+To choose for yourself, add `--version <version>` to your install or update command. For example, if `2.1.0` is listed:
+
+```bash
+bash /tmp/aidlc-install.sh update --version 2.1.0
+```
+
+To install an older version than the one you are running, also add `--allow-downgrade`. The installer refuses a downgrade without that option.
+
+### Change settings on a managed installation
+
+Your deployment settings are stored in a `.tfvars` text file. For the `dev` installation above, open:
+
+```text
+~/.config/collaborative-ai-dlc/terraform/environments/dev.tfvars
+```
+
+If you chose another environment name, replace `dev` with that name. If you changed the default file location, see [Installer files](#installer-files).
+
+Find the setting you want in the [configuration reference](#configuration-reference), edit its value in the file, and save it. Then run:
+
+```bash
+bash /tmp/aidlc-install.sh update --reapply
+```
+
+`--reapply` tells the installer to deploy again even if the selected software version is already installed. This applies your saved settings and rebuilds the web application.
+
+The command still checks for the newest release. To change settings while keeping your current software version, first look up that version with `status`, then include it:
+
+```bash
+bash /tmp/aidlc-install.sh update --version <installed-version> --reapply
+```
+
+Some settings must be changed through installer options because the installer writes them into the Terraform configuration on every deployment. Editing only their Terraform values will not work:
+
+| Setting                                                 | Installer option                            |
+| ------------------------------------------------------- | ------------------------------------------- |
+| Environment name (`environment`)                        | `--environment`                             |
+| AWS Region (`aws_region`)                               | `--region`                                  |
+| Application domain (`app_domain`)                       | `--domain`                                  |
+| Additional application hostnames (`app_domain_aliases`) | `--domain-alias` (repeat for each hostname) |
+| Application certificate (`acm_certificate_arn`)         | `--certificate-arn`                         |
+| Application DNS zone (`route53_zone_id`)                | `--hosted-zone-id`                          |
+| Login method (`auth_mode`)                              | `--auth-mode`                               |
+| Enterprise identity providers (`sso_providers`)         | `--sso-config`                              |
+
+Add the relevant options to the `update --reapply` command. See [custom domains](#custom-domain) and [enterprise SSO](#enterprise-sso) for complete examples. Changing an existing environment name or Region can replace AWS resources; choose those during initial setup whenever possible.
+
+### Installer files
+
+By default, the installer stores these files in your home directory (`~`):
+
+- **Downloaded releases:** `~/.local/share/collaborative-ai-dlc/releases/`, with a separate folder for each fixed release version.
+- **Terraform settings:** `~/.config/collaborative-ai-dlc/terraform/environments/`, reused across updates.
+
+The installer keeps a `current` shortcut to the last successfully installed release. It changes that shortcut only after the AWS infrastructure, administrator setup, and frontend deployment all succeed. If an update fails, the shortcut still points to the previous release; AWS changes already applied are not automatically rolled back.
+
+If you have set the environment variables `XDG_DATA_HOME` or `XDG_CONFIG_HOME`, they replace `~/.local/share` or `~/.config`, respectively, in these paths. Otherwise, use the default paths shown here.
+
+### Update a manual installation
+
+Run the command for the part of the application you changed:
 
 | What changed                    | Command                             |
 | ------------------------------- | ----------------------------------- |
@@ -915,6 +732,44 @@ For advanced manual installations:
 | Custom domain                   | both, in that order                 |
 
 A domain change needs both steps: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because the endpoint URLs are inlined into the bundle at build time.
+
+### Test an unreleased branch
+
+Testers can install a branch such as `aidlc-v2` before it has a release:
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/aidlc-v2/scripts/install.sh
+
+bash /tmp/aidlc-install.sh install \
+  --ref aidlc-v2 \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment v2-test \
+  --admin <administrator-email>
+```
+
+The installer downloads a copy of the branch at its current commit and saves which branch you chose. Running `update` then installs newer commits from that branch. Each downloaded copy stays fixed at its original commit. Without `--ref`, installations use fixed release versions instead.
+
+### Adopt an existing v1 deployment
+
+!!! warning "V1 sprints in v2"
+
+    V1 sprints are view-only in v2. Continue active v1 work with the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0), then upgrade after the sprint is complete.
+
+The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
+
+```bash
+bash /tmp/aidlc-install.sh adopt \
+  --source /path/to/existing-v1-checkout \
+  --environment dev \
+  --profile <aws-profile> \
+  --admin <existing-administrator-email>
+
+bash /tmp/aidlc-install.sh update --version 2.1.0
+```
+
+The update backs up Terraform state and rejects plans that unexpectedly destroy Cognito, Neptune, S3, or persistent DynamoDB resources. Retiring the v1 ECS agent runtime and agent-pool table is expected. The existing administrator receives `platform-admin`. If an update fails, `current` still points to the previous working release.
 
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
@@ -937,9 +792,9 @@ Both paths share the same shared core, so the result is identical. Migration is 
 
 These are all inputs declared in the deployment's root `terraform/*.tf` files, including `variables.tf` and `yjs.tf`. Inputs inside `terraform/modules/` are wired by the deployment; they are not additional settings you can put in an environment's `.tfvars`.
 
-For a managed installation, edit `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc/terraform/environments/<environment>.tfvars`, then run `bash /tmp/aidlc-install.sh update --reapply`. Use installer options for the environment, region, application domain, and SSO configuration that the installer manages. For a manual installation, edit `terraform/environments/<environment>.tfvars` and run `./scripts/deploy-terraform.sh <environment>`. Changes to frontend URLs or authentication also require `./scripts/deploy-frontend.sh <environment>`; the managed installer performs both steps.
+For a managed installation, follow [Change settings on a managed installation](#change-settings-on-a-managed-installation). Your settings file is normally `~/.config/collaborative-ai-dlc/terraform/environments/<environment>.tfvars`; see [Installer files](#installer-files) if you use a custom location. For a manual installation, edit `terraform/environments/<environment>.tfvars` and run `./scripts/deploy-terraform.sh <environment>`. Changes to frontend URLs or authentication also require `./scripts/deploy-frontend.sh <environment>`; the managed installer performs both steps.
 
-Examples below are HCL assignments for that file. Replace example hostnames, resource IDs, and ARNs with your own. Omit a setting to use its declared default; `""`, `[]`, `{}`, and `null` have the specific meanings described below. A value in a `.tfvars` file takes precedence over `TF_VAR_*`; see [command-line overrides](#without-the-installer) for `--var`. Defaults here come from the source declarations, so an existing environment file or an administrator's saved setting can differ.
+Examples below are HCL assignments for that file. Replace example hostnames, resource IDs, and ARNs with your own. Omit a setting to use its declared default; `""`, `[]`, `{}`, and `null` have the specific meanings described below. A value in a `.tfvars` file takes precedence over `TF_VAR_*`; see [command-line overrides](#command-line-overrides) for `--var`. Defaults here come from the source declarations, so an existing environment file or an administrator's saved setting can differ.
 
 ### Deployment identity and networking
 
@@ -962,6 +817,14 @@ The deployment's resource-name prefix and `Project` tag, not the name of an indi
 `"prod"` selects production behavior: two NAT gateways, longer log retention, larger default Yjs containers, production S3 lifecycle rules, and buckets that cannot be force-destroyed. Automated destroy scripts refuse it, and `skip_final_snapshot = true` is rejected. Every other name, including `"dev"`, `"test"`, and `"production"`, selects non-production behavior. Database deletion protection is controlled separately by [deletion_protection](#deletion_protection), which defaults to `true` in every environment.
 
 Example: `environment = "prod"` for production; `environment = "test"` for a disposable test deployment. Use the same name in your environment files and deployment command. Renaming an existing environment can replace resources.
+
+!!! warning "A production environment must be named exactly `prod`"
+
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger default Yjs collaboration containers, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run. DynamoDB, Neptune and Cognito deletion protection is controlled separately by [deletion_protection](#deletion_protection), which defaults to `true` in every environment.
+
+    A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
+
+<span id="provider-ip-allow-lists"></span>
 
 #### `lambda_vpc_scope`
 
@@ -1171,7 +1034,9 @@ Register the OAuth app and provide network access as described in [self-managed 
 
 Example: `pr_title_tracker_key = true` when your review process expects the Jira key in PR titles.
 
-### Container builds and Instances compute
+<span id="container-builds-and-instances-compute"></span>
+
+### Container builds
 
 #### `docker_build_args`
 
@@ -1186,7 +1051,9 @@ docker_build_args = {
 }
 ```
 
-Only arguments understood by Docker or the Dockerfiles have an effect; these do not configure runtime networking. Deployment scripts also detect standard proxy environment variables unless `TF_VAR_docker_build_args` is set. A `.tfvars` value wins over that environment value. Sensitive marking hides CLI output, but values remain in saved plans and state. See [managed installation](#managed-installation) for proxy setup.
+Only arguments understood by Docker or the Dockerfiles have an effect; these do not configure runtime networking. Deployment scripts detect standard proxy environment variables; see [proxy settings](#proxy-settings) for the installer and environment-variable examples.
+
+To supply your own container build settings, set `TF_VAR_docker_build_args` to a JSON object. This replaces the automatically detected settings. A `.tfvars` value wins over that environment value. Terraform hides these values in terminal output but saves them in plan and state files. Restrict access to those files and keep state storage encrypted.
 
 #### `agentcore_image_tag`
 
@@ -1203,6 +1070,82 @@ Example: `agentcore_image_tag = "1.2.3"` uses `1.2.3` and, when required, `1.2.3
 `null` builds the Yjs collaboration server locally during apply. An existing ECR tag uses the pre-built AMD64 image from `<project_name>-yjs-server-<environment>`, resolved to a digest during planning. A missing tag fails the plan.
 
 Example: `yjs_image_tag = "1.2.3"`. Supply a tag; use `null`, not `""`, to return to local builds. This choice is independent of `agentcore_image_tag`.
+
+#### Public ECR base-image authentication
+
+Container builds use the existing digest-pinned Public ECR Node images.
+`deploy-terraform.sh` automatically runs `scripts/with-public-ecr-auth.mjs`
+for `--phase all` and `--phase apply`; a separate plan does not request a token.
+The wrapper requests a fresh token in `us-east-1` using the current deployment
+identity, so that identity needs the
+[Public ECR permissions](prerequisites.md#public-ecr-permissions-for-container-builds).
+
+The wrapper creates a temporary Docker config with restrictive permissions and
+passes its directory as `DOCKER_CONFIG` for the deployment subprocess. The
+locked Terraform Docker provider's Buildx path reads this config for its
+BuildKit auth session, covering AgentCore ARM64, optional AgentCore AMD64, and
+Yjs AMD64. Terraform's existing private ECR `registry_auth` still handles image
+pushes. Existing Docker contexts, proxy settings and other registry helpers are
+retained; only Public ECR uses the fresh token. The caller's Docker config is
+unchanged. The temporary config is removed on completion, failure, SIGINT or
+SIGTERM; a forced kill or host loss can bypass cleanup, so use an ephemeral
+runner or clean abandoned `aidlc-public-ecr-*` temporary directories.
+
+Before running the deployment command, the wrapper checks authenticated GET
+access to the exact manifests named in both Dockerfiles. This catches missing
+permissions, expired/invalid authentication and manifest-access failures before
+apply. It does **not** download or verify every layer, validate platform
+execution, warm the builder cache, or prove connectivity from a separate builder.
+It does not retry Terraform apply.
+
+For direct Terraform use, wrap the saved-plan apply explicitly:
+
+```bash
+node scripts/with-public-ecr-auth.mjs "$PWD" -- \
+  terraform -chdir=terraform apply /tmp/aidlc-dev.tfplan
+```
+
+AWS documents a separate unauthenticated data allowance; a `429 Data limit
+exceeded` response is not necessarily a short burst of requests. Authentication
+removes reliance on anonymous pulls but cannot guarantee freedom from account
+or service limits. If authenticated pulls still encounter limits, record which
+identity and build failed, check the applicable
+[Public ECR quotas](https://docs.aws.amazon.com/AmazonECR/latest/public/public-service-quotas.html),
+and evaluate a separately approved private ECR mirror or pull-through cache.
+That requires repository/cache permissions, lifecycle and cost decisions, and
+verification of the pinned image digests for each architecture. This deployment
+does not provision a mirror or fall back to anonymous Docker Hub pulls.
+
+#### Pre-built container images
+
+By default Terraform builds the AgentCore and Yjs images during apply. To build
+them elsewhere (for example in CI, so they can be scanned before they deploy),
+push them to the deployment's ECR repositories and set their tags:
+
+```hcl
+# terraform/environments/dev.tfvars
+agentcore_image_tag = "1.2.3"
+yjs_image_tag       = "1.2.3"
+```
+
+| Image     | Repository                   | Build context        | Dockerfile                     | Platform                                                       |
+| --------- | ---------------------------- | -------------------- | ------------------------------ | -------------------------------------------------------------- |
+| AgentCore | `<project>-agentcore-<env>`  | `lambda/`            | `lambda/agentcore/Dockerfile`  | `linux/arm64`, plus `linux/amd64` as `<tag>-amd64` (see below) |
+| Yjs       | `<project>-yjs-server-<env>` | `lambda/yjs-server/` | `lambda/yjs-server/Dockerfile` | `linux/amd64`                                                  |
+
+- With `enable_instances_compute = true`, also push the AgentCore amd64 image
+  as `<tag>-amd64`.
+- Each tag is resolved to its digest, and both images deploy by digest, so
+  moving a tag later does not change a running deployment. Treat the tags as
+  write-once: published environment revisions pin the AgentCore digest, and the
+  AgentCore repository has no lifecycle policy (see issue #427).
+- Plan fails if a tag is missing from its repository, so push the images
+  before planning. Terraform creates the repositories, so a new environment
+  needs one apply with the defaults (or a targeted apply of the two
+  `aws_ecr_repository` resources) before switching to pre-built images.
+- Leaving either variable unset (`null`) keeps the build during apply.
+
+### Instances compute
 
 #### `enable_instances_compute`
 
@@ -1298,7 +1241,9 @@ For fixed clustered capacity, replace `autoscaling` with `desired_count = 4`. Sc
 
 **For an existing deployment, migrate before scaling:** have editors save and close, apply `cluster_enabled = true`, `mode_transition = true`, and `desired_count = 1` without autoscaling, then verify checkpoint recovery. Set `mode_transition = false` in the next apply before increasing capacity. Returning to standalone needs a maintenance window because it cannot read cluster checkpoints. Follow [Yjs operations](../development/yjs-operations.md#enable-expand-and-roll-back) for rollout, recovery, and load testing.
 
-### Web protection and application domains
+<span id="web-protection-and-application-domains"></span>
+
+### AWS WAF
 
 #### `enable_waf`
 
@@ -1306,7 +1251,45 @@ For fixed clustered capacity, replace `autoscaling` with `desired_count = 4`. Sc
 
 `false` creates no WAF ACLs or REST origin-header restriction. `true` creates a CloudFront ACL and a regional ACL shared by API Gateway and Cognito, with managed protections and a REST API rule requiring CloudFront's generated origin secret. Direct REST calls without that header are blocked even with a valid JWT. The WebSocket API is unaffected by that REST rule.
 
-Example: `enable_waf = true`. Review costs and exercise your normal requests before enabling it; see [AWS WAF](#aws-waf) for rule behavior, including building-block body exceptions.
+Example: `enable_waf = true`. Review costs and exercise your normal requests before enabling it; see [WAF rules and request handling](#waf-rules-and-request-handling) for rule behavior, including building-block body exceptions.
+
+#### WAF rules and request handling
+
+[AWS WAF](https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html) (Web Application Firewall) is optional and disabled by default.
+To create web ACLs for CloudFront, the REST API Gateway stage, and the Cognito user pool, set:
+
+```hcl
+enable_waf = true
+```
+
+The ACLs use the AWS-managed Common Rule Set, Known Bad Inputs, and Amazon IP Reputation rule groups.
+With `enable_waf = true`, the shared regional ACL also blocks application REST API requests with a missing or incorrect `X-Origin-Verify` header, including direct requests with a valid Cognito JWT. The rule checks URL-decoded paths containing `/api`, which covers every application REST route with or without the stage prefix. Cognito's supported login and token paths do not match this condition, so they do not require the header. CloudFront injects the generated secret for every request to the REST API origin, including OPTIONS preflight and OAuth callbacks. A correct header continues through the managed rules and existing authentication and application authorization checks.
+
+This retains two ACLs: one for CloudFront and one shared by API Gateway and Cognito. The origin check adds one WAF rule (currently $1/month, prorated hourly), with no additional ACL or managed rule groups. New REST routes must remain under `/api` or the rule's path scope must be updated.
+
+With `enable_waf = false` (the default), no WAF ACLs or origin-header restriction are enforced. Direct REST API requests remain available with the existing authentication and authorization controls. The WebSocket API is unaffected by the REST API origin check.
+
+This is a secret-based access restriction: the REST API endpoint remains public, and anyone who obtains the secret can satisfy the origin check. Keep Terraform state and access to the CloudFront/WAF configuration restricted. The secret is not included in the frontend bundle. WAF request sampling is disabled and WAF request logging is not configured; if you enable WAF logging separately, redact the `x-origin-verify` header.
+
+Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
+A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
+
+##### Building-block bodies
+
+Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
+
+- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`), with `{type}` matched in any case as the API accepts it. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
+- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
+
+The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
+
+### Custom domain
+
+Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
+
+Every public path — the SPA, `/api/*`, `/ws` and `/yjs/*` — is served by a single CloudFront distribution, so a custom domain needs exactly one certificate and one distribution change. There is no API Gateway custom domain or load balancer certificate to configure. Enterprise SSO uses a separate Cognito managed-login domain for federation; it does not serve the application.
+
+The certificate **must be in `us-east-1`** regardless of the deployment region, because CloudFront accepts viewer certificates from no other region.
 
 #### `app_domain`
 
@@ -1348,7 +1331,151 @@ Example: `route53_zone_id = "Z1234567890ABC"`. For a zone in another account, al
 
 Example: `dns_role_arn = "arn:aws:iam::444455556666:role/aidlc-dns"` for centrally managed Route53. Both configured zones must be accessible through this one role. It does not move the application or certificate into the DNS account.
 
+#### Bring your own certificate
+
+For centrally managed, imported, or wildcard certificates, and for DNS that lives outside Route53 or in another AWS account. The certificate must already be `ISSUED` in the deployment account and `us-east-1`, cover every hostname, and chain to a publicly trusted certificate authority supported by CloudFront. A private-CA certificate trusted only by your organization's browsers does not meet CloudFront's [alternate-domain requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html).
+
+```bash
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email> \
+  --domain aidlc.example.com \
+  --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id>
+```
+
+The installer prints the DNS records to create when it finishes. Add `--hosted-zone-id` alongside `--certificate-arn` to keep your own certificate but let Terraform manage the records.
+
+#### Terraform-managed certificate
+
+The installer uses a Route53 hosted zone in the deployment account. Terraform requests the certificate, publishes the validation records, waits for issuance, and creates the A/AAAA alias records. For cross-account Route53 with a manual deployment, also set [dns_role_arn](#dns_role_arn).
+
+```bash
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email> \
+  --domain aidlc.example.com \
+  --hosted-zone-id Z1234567890ABC
+```
+
+#### Multiple hostnames
+
+Additional hostnames for the same deployment use `--domain-alias`, repeated as needed:
+
+```bash
+  --domain aidlc.example.com \
+  --domain-alias www.aidlc.example.com
+```
+
+`--domain` is canonical: it is the hostname used for the OAuth redirect URIs and baked into the frontend build, so there can only be one. Aliases are additional names CloudFront answers on. The CloudFront domain also keeps working, which is useful when DNS is misconfigured.
+
+Before touching AWS the installer verifies that the certificate is in `us-east-1`, is `ISSUED`, and covers every hostname (wildcards included); that the hosted zone exists and contains every hostname; and that no other CloudFront distribution already claims the hostnames. Each of these would otherwise fail several minutes into a distribution update.
+
+The same flags work on `update`, and `--no-domain` removes a configured domain.
+
+#### Without the installer
+
+Invoking `deploy-terraform.sh` and `deploy-frontend.sh` directly works the same way — set the variables in your environment's `.tfvars` instead of passing flags:
+
+```hcl
+# terraform/environments/dev.tfvars
+app_domain         = "aidlc.example.com"
+app_domain_aliases = ["www.aidlc.example.com"] # optional
+
+# Supply either of the next two, or both. With only a certificate ARN you
+# manage DNS yourself; with only a zone ID Terraform requests the certificate
+# as well; with both it uses your certificate and manages the records.
+acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/<id>"
+route53_zone_id     = ""
+```
+
+Then apply and rebuild the frontend, **in that order**:
+
+```bash
+./scripts/deploy-terraform.sh dev
+./scripts/deploy-frontend.sh dev
+```
+
+Both steps are required. Terraform updates the distribution, the OAuth redirect URIs and the CORS allowlists; the frontend then has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
+
+For temporary or CI configuration, see [command-line overrides](#command-line-overrides).
+
+!!! warning "The installer's preflight checks do not run on this path"
+
+    Terraform verifies that the variable combination is coherent and that the certificate ARN is in `us-east-1`, but it cannot check the certificate's status, what hostnames it covers, or whether another CloudFront distribution already claims your hostname. Those failures surface several minutes into the apply — or, for a certificate still pending validation, never fail and simply never work.
+
+    Verify by hand first:
+
+    ```bash
+    # Must be ISSUED, and the names must cover every hostname
+    # (a wildcard covers one label: *.example.com matches a.example.com only).
+    aws acm describe-certificate \
+      --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id> \
+      --region us-east-1 \
+      --query 'Certificate.{Status:Status,Names:SubjectAlternativeNames}'
+
+    # Your hostname must not appear here — CloudFront aliases are globally unique.
+    aws cloudfront list-distributions \
+      --query 'DistributionList.Items[].{Id:Id,Aliases:Aliases.Items}' \
+      --output table
+
+    # If using route53_zone_id, the zone must contain every hostname.
+    aws route53 get-hosted-zone --id Z1234567890ABC --query 'HostedZone.Name'
+    ```
+
+To review the plan before applying — worth doing when adding or removing a domain, since it changes the distribution, the environment variables of every Lambda that handles OAuth or returns CORS headers, and the artifacts bucket CORS rules:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+Removing a domain is the same edit in reverse: clear all four values back to `""` / `[]`, then run both scripts again. All four have to go together — a leftover certificate ARN or zone ID with an empty `app_domain` is rejected at plan time, on the assumption that it is a half-finished edit rather than an intent to configure a certificate for nothing. Via `--var` that means:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --var app_domain= \
+  --var 'app_domain_aliases=[]' \
+  --var acm_certificate_arn= \
+  --var route53_zone_id=
+```
+
+Removing or renaming a domain whose certificate Terraform owns takes about five minutes longer than the distribution update alone. CloudFront releases a certificate asynchronously, so ACM still reports it as in use for a while after the distribution reports `Deployed`, and deleting it too early fails. The apply waits that out before deleting. A supplied `acm_certificate_arn` is never deleted by Terraform and so is not affected.
+
+#### External DNS
+
+Terraform only manages records when `--hosted-zone-id` is given. Otherwise create them yourself, pointing at the value the installer prints:
+
+```bash
+terraform -chdir=terraform output -raw dns_target
+```
+
+Use an alias/ANAME record where your provider supports it and a CNAME otherwise. Apex domains require alias records — a CNAME is not valid there. Both `A` and `AAAA` are needed because the distribution is IPv6-enabled. CloudFront accepts the hostname as soon as the certificate covers it, so the apply succeeds before the records exist; the deployment is simply unreachable on that hostname until they are published.
+
+#### Adding a domain to a running deployment
+
+Setting the domain at initial install avoids all of the following. On an existing deployment:
+
+1. Obtain a `us-east-1` certificate covering the hostname, `ISSUED`.
+2. Run `update` with the domain flags. The CloudFront distribution update takes 5–15 minutes.
+3. Create the DNS records if you manage DNS yourself.
+4. The frontend is rebuilt and redeployed automatically — the endpoint URLs are inlined at build time, so a Terraform apply alone is not enough.
+5. Update the **Authorization callback URL** in every configured OAuth provider to the new hostname. GitHub App mode needs no change.
+6. **Every GitLab connection must be reauthorized.** GitLab requires `redirect_uri` on the refresh-token grant and it must match the original authorization request, so changing the canonical hostname invalidates all stored GitLab refresh tokens. GitHub OAuth tokens and Jira connections are unaffected.
+
+`update --no-domain` reverses the change. The CloudFront domain never changes, so it remains a working entry point throughout.
+
 ### Login, SSO, and session lifetimes
+
+#### Enterprise SSO
+
+OIDC and SAML federation, including Microsoft Entra ID and Okta, is configured
+at deployment time rather than in the Admin UI. See [Enterprise SSO](enterprise-sso.md)
+for the installer bootstrap sequence, provider files, and authoritative role
+mapping.
 
 #### `auth_mode`
 
@@ -1642,7 +1769,7 @@ For a local/manual checkout, pass any environment with matching `.tfvars` and `.
 
     These commands permanently delete all application data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone. Interactive runs require typing the environment name; use `--yes` only for deliberate non-production automation.
 
-Both paths back up Terraform state before destruction. Managed installs store the backup under the XDG data directory. Standalone runs use `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc/backups` unless `AIDLC_BACKUP_DIR` is set. The backend state bucket is retained.
+Both paths back up Terraform state before destruction. By default, backups are saved in `~/.local/share/collaborative-ai-dlc/backups/`. If `XDG_DATA_HOME` is set, it replaces `~/.local/share` in that path. For standalone runs, `AIDLC_BACKUP_DIR` overrides the entire backup path. The backend state bucket is retained.
 
 Both automated paths refuse an effective `prod` environment, including a differently named tfvars file whose `environment` value is `prod`. Direct `terraform destroy` is intentionally blocked while deletion protection remains enabled.
 
