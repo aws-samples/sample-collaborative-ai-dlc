@@ -779,7 +779,13 @@ export const gatewayToolsLaunch = ({ launch, env, scope }) =>
   (scope.mode ?? 'stage') === 'stage'
     ? {
         entry: GATEWAY_PROXY_ENTRY,
-        trustedEnv: { ...launch.trustedEnv, AIDLC_MCP_GATEWAY_MODE: 'passthrough' },
+        trustedEnv: {
+          ...launch.trustedEnv,
+          AIDLC_MCP_GATEWAY_MODE: 'passthrough',
+          ...(env.AIDLC_MCP_GATEWAY_LAMBDA_TARGETS
+            ? { AIDLC_MCP_GATEWAY_LAMBDA_TARGETS: env.AIDLC_MCP_GATEWAY_LAMBDA_TARGETS }
+            : {}),
+        },
       }
     : null;
 

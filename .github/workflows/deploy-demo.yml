@@ -138,6 +138,7 @@ jobs:
       DEPLOY_REF_TYPE: ${{ inputs.ref_type || 'release-tag' }}
       DEPLOY_TARGET: ${{ inputs.deployment_target || 'release' }}
       GITHUB_ENVIRONMENT: ${{ inputs.github_environment || 'demo-release' }}
+      MCP_GATEWAY_CONFIG: ${{ vars.MCP_GATEWAY_CONFIG }}
       REQUIRE_CUSTOM_DOMAIN: ${{ inputs.require_custom_domain || false }}
       SSO_CONFIG: ${{ secrets.SSO_CONFIG }}
       TF_ENVIRONMENT: prod
@@ -424,6 +425,17 @@ jobs:
               printf 'acm_certificate_arn = %s\n' "$(hcl_string "$ACM_CERTIFICATE_ARN")"
               printf 'route53_zone_id     = ""\n'
             } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
+
+          # Optional Gateway rollout variables (enable_mcp_gateway, customer
+          # MCP targets, ...). They hold provider and secret ARNs, no secrets.
+          # A JSON variable file, which deploy-terraform.sh includes in the plan.
+          if [[ -n "$MCP_GATEWAY_CONFIG" ]]; then
+            gateway_input="$config_dir/mcp-gateway-config.json"
+            printf '%s' "$MCP_GATEWAY_CONFIG" > "$gateway_input"
+            node scripts/gateway-config.mjs "$gateway_input" \
+              > "$config_dir/environments/$TF_ENVIRONMENT.gateway.tfvars.json"
+            rm -f "$gateway_input"
           fi
 
           # AUTH_DOMAIN is not resolved up front: its DNS record can only point

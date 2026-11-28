@@ -11,15 +11,17 @@
 // In passthrough mode (AIDLC_MCP_GATEWAY_MODE=passthrough) the same proxy
 // serves the customer MCP targets behind the Gateway instead: it lists the
 // Gateway's tools (already filtered to this grant by the RESPONSE interceptor),
-// drops the built-in `aidlc___*` ones and forwards calls and results unchanged,
-// under their qualified `<target>___<tool>` names. The runtime never holds a
-// customer credential: the Gateway injects it.
+// drops the built-in `aidlc___*` ones and forwards calls unchanged, under
+// their qualified `<target>___<tool>` names (results of Lambda targets, named
+// in AIDLC_MCP_GATEWAY_LAMBDA_TARGETS, are unwrapped). The runtime never holds
+// a customer credential: the Gateway injects it.
 //
 // ENV (runtime-provided, never agent-provided):
 //   AIDLC_MCP_GATEWAY_URL   https://<gateway>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp
 //   AIDLC_MCP_GATEWAY_GRANT control-plane grant for this invocation
 //   AIDLC_MCP_GATEWAY_TARGET Gateway target name (default `aidlc`)
 //   AIDLC_MCP_GATEWAY_MODE  `passthrough` for the customer tools, else built-in
+//   AIDLC_MCP_GATEWAY_LAMBDA_TARGETS comma-separated customer Lambda targets
 //   plus the V2_* scope variables the local server reads.
 import { createHash, createHmac } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -191,9 +193,10 @@ export const isCustomerGatewayTool = (name) => {
 
 // The customer tools exactly as the Gateway lists them for this grant. Each
 // page is forwarded with its cursor, so the CLI pages through the Gateway.
-// Results are NOT unwrapped (unwrapGatewayResult is for the built-in Lambda
-// envelope): a customer server's content is returned as it sent it.
-export const createGatewayPassthroughServer = ({ client }) => {
+// A remote MCP server's result is returned as it sent it. A Lambda target's
+// result is the MCP envelope the function returned, which the Gateway
+// serialized into a text part like the built-in target's, so it is unwrapped.
+export const createGatewayPassthroughServer = ({ client, lambdaTargets = new Set() }) => {
   const server = new Server(
     { name: 'aidlc-gateway-tools', version: '1.0.0' },
     { capabilities: { tools: {} } },
@@ -212,11 +215,14 @@ export const createGatewayPassthroughServer = ({ client }) => {
       throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
     }
     try {
-      return await client.request(
+      const result = await client.request(
         { method: 'tools/call', params: { name, arguments: args ?? {} } },
         CallToolResultSchema,
         { timeout: TOOL_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true },
       );
+      return lambdaTargets.has(splitQualifiedToolName(name).target)
+        ? unwrapGatewayResult(result)
+        : result;
     } catch (error) {
       const denial = gatewayDenial(error);
       if (denial) return denial;
@@ -246,7 +252,10 @@ export const startGatewayProxy = async ({ env = process.env } = {}) => {
   await client.connect(transport);
 
   if (env.AIDLC_MCP_GATEWAY_MODE === GATEWAY_PASSTHROUGH_MODE) {
-    const server = createGatewayPassthroughServer({ client });
+    const lambdaTargets = new Set(
+      (env.AIDLC_MCP_GATEWAY_LAMBDA_TARGETS ?? '').split(',').filter(Boolean),
+    );
+    const server = createGatewayPassthroughServer({ client, lambdaTargets });
     await server.connect(new StdioServerTransport());
     console.error('[agentcore-mcp] gateway customer-tool proxy connected');
     return server;

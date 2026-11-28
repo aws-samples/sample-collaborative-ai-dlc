@@ -251,6 +251,11 @@ test('release and main deployments use isolated protected environments and GitHu
   assert.match(deployment, /printf 'auth_domain {10}= %s\\n'/);
   assert.match(deployment, /node scripts\/sso-config\.mjs "\$sso_input" "\$AUTH_MODE"/);
   assert.match(deployment, /\$TF_ENVIRONMENT\.sso\.tfvars\.json/);
+  assert.match(deployment, /MCP_GATEWAY_CONFIG: \$\{\{ vars\.MCP_GATEWAY_CONFIG \}\}/);
+  assert.match(
+    deployment,
+    /node scripts\/gateway-config\.mjs "\$gateway_input" \\\n\s+> "\$config_dir\/environments\/\$TF_ENVIRONMENT\.gateway\.tfvars\.json"/,
+  );
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /case "\$DEPLOY_REF_TYPE" in/);
@@ -1340,6 +1345,7 @@ test('standalone deployment reads managed SSO tfvars and rejects SSO flags on sa
     .split('\n')
     .find((line) => line.startsWith('plan '));
   assert.match(planLine, /-var-file=\S+summary\.sso\.tfvars\.json/);
+  assert.doesNotMatch(planLine, /gateway\.tfvars\.json/);
 
   const rejected = run(
     'bash',
@@ -1357,6 +1363,28 @@ test('standalone deployment reads managed SSO tfvars and rejects SSO flags on sa
   );
   assert.equal(rejected.status, 2);
   assert.match(rejected.stderr, /apply at plan time/);
+});
+
+test('standalone deployment plans with the generated MCP Gateway variable file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-gateway-tfvars-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  writeJson(join(dir, 'config/environments/summary.gateway.tfvars.json'), {
+    enable_mcp_gateway: true,
+  });
+
+  const planned = run(
+    'bash',
+    [deployTerraform, 'summary', '--phase', 'plan', '--plan-file', planFile],
+    { env },
+  );
+  assert.equal(planned.status, 0, planned.stderr);
+  const planLine = readFileSync(terraformLog, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('plan '));
+  assert.match(
+    planLine,
+    /-var-file=\S+summary\.tfvars -var-file=\S+summary\.gateway\.tfvars\.json/,
+  );
 });
 
 test('frontend environment generation preserves enterprise provider labels', () => {

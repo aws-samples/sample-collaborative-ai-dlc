@@ -1,6 +1,6 @@
 # Customer MCP servers behind the Gateway
 
-Platform administrators can serve a customer's own MCP servers (for example a Confluence or Jira MCP server) to agents through the AgentCore Gateway the built-in tools already use. The agent runtime never holds the server's credential, under either [credential profile](#gateway-only-profile): the Gateway fetches it from AgentCore Identity on each call, and the runtime role has no permission to fetch it. The Gateway's interceptor decides who may call which tool from the control plane's signed grant, per space, stage and tool.
+Platform administrators can serve a customer's own MCP servers (for example a Confluence or Jira MCP server), or a Lambda function that implements MCP tools, to agents through the AgentCore Gateway the built-in tools already use. The agent runtime never holds the server's credential, under either [credential profile](#gateway-only-profile): the Gateway fetches it from AgentCore Identity on each call, and the runtime role has no permission to fetch it. The Gateway's interceptor decides who may call which tool from the control plane's signed grant, per space, stage and tool.
 
 This is a deployment-level setting in Terraform, not a space setting. Space and platform custom MCP servers (**Space Settings → Agent → MCP Servers**, **Admin → Agents**) keep working as before unless the deployment uses the [Gateway-only profile](#gateway-only-profile).
 
@@ -111,7 +111,7 @@ mcp_gateway_custom_targets = {
 - `private_endpoint` takes the same `managed_vpc_resource` or `self_managed_lattice_resource` block as `aws_bedrockagentcore_gateway_target`.
 - The encoded allow rules must stay under 2 KB; Terraform refuses a larger set.
 
-Terraform creates one Gateway target per entry, lets it receive only the `x-aidlc-caller` request header, and gives the Gateway role exactly the permissions to fetch those providers' tokens or keys (`bedrock-agentcore:GetWorkloadAccessToken` on its workload identity; `GetResourceOauth2Token` or `GetResourceApiKey` on the providers, the `default` token vault and its workload identity, against all of which AgentCore authorizes the call; and `secretsmanager:GetSecretValue` on the provider secrets). The interceptor receives the allow rules only; the runtime learns only that customer targets exist.
+Terraform creates one Gateway target per entry, lets it receive only the `x-aidlc-caller` request header, and gives the Gateway role exactly the permissions to fetch those providers' tokens or keys (`bedrock-agentcore:GetWorkloadAccessToken` on its workload identity; `GetResourceOauth2Token` or `GetResourceApiKey` on the providers, the `default` token vault and its workload identity, against all of which AgentCore authorizes the call; and `secretsmanager:GetSecretValue` on the provider secrets). The interceptor receives the allow rules only; the runtime learns only that customer targets exist and which of them are Lambda functions.
 
 ### 3. Deploy
 
@@ -125,6 +125,36 @@ The Gateway keeps the tool list it synchronized. When the server later adds or c
 aws bedrock-agentcore-control synchronize-gateway-targets \
   --gateway-identifier <gateway id> --target-id-list <target id>
 ```
+
+### Lambda function targets
+
+A target can also be a Lambda function in the deployment's account, for a tool you write yourself or an adapter in front of a server the Gateway cannot authenticate to. Declare `lambda` instead of `endpoint` and `auth`. `tool_schema` is the tool list as a JSON string, which a variable file cannot read from a file, so generate a JSON variable file with the schema embedded. `deploy-terraform.sh` includes `<environment>.gateway.tfvars.json`, next to `<environment>.tfvars`, in the plan:
+
+```sh
+node -e '
+  const [schema, out] = process.argv.slice(1);
+  const vars = {
+    mcp_gateway_custom_targets: {
+      codekb: {
+        lambda: {
+          function_arn: "arn:aws:lambda:<region>:<account>:function:codekb-tools",
+          tool_schema: require("node:fs").readFileSync(schema, "utf8"),
+        },
+        allow: { project_ids: ["<space id>"] },
+      },
+    },
+  };
+  require("node:fs").writeFileSync(out, JSON.stringify(vars, null, 2) + "\n");
+' codekb-tool-schema.json terraform/environments/prod.gateway.tfvars.json
+```
+
+A variable set in both files takes its value from the JSON file, so declare every customer target in the same file. Terraform reads JSON strings literally: descriptions may contain `${...}` or `%{...}`.
+
+- The Gateway invokes the function with its own role: Terraform grants that role `lambda:InvokeFunction` on exactly the listed functions, and no AgentCore Identity permission. `private_endpoint` does not apply.
+- `tool_schema` is the function's tool list, a JSON array of `{ "name", "description", "inputSchema" }`; every tool needs a description, and `inputSchema.type` is `array`, `boolean`, `integer`, `number`, `object` or `string`, which Terraform publishes in the artifacts bucket for the Gateway. The Gateway does not list tools from a function, so update the schema and apply when the tools change.
+- The function receives the tool's arguments as the event. The Lambda context's `clientContext.custom` carries `bedrockAgentCoreToolName` (`<target>___<tool>`) and `bedrockAgentCorePropagatedHeaders`, which holds `x-aidlc-caller` as described in the [contract](#contract-for-the-customer-mcp-server). Return an MCP tool result, `{ "content": [{ "type": "text", "text": "..." }], "isError": false }`.
+- Grant nothing else invoke on the function. The caller envelope is trustworthy only because the Gateway role is the one principal that can call it.
+- The function's own permissions, network access and credentials for the systems it calls are yours to manage.
 
 ### 4. Verify
 

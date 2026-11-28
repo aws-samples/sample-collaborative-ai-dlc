@@ -250,8 +250,10 @@ variable "enable_engine_data" {
 
 variable "mcp_gateway_custom_targets" {
   description = <<-EOT
-    Customer MCP servers served behind the AgentCore Gateway as remote MCP targets (requires enable_mcp_gateway). The map key is the Gateway target name: agents see its tools as <name>___<tool>, and the allow rules below refer to it, so treat it as immutable; renaming creates a new target. The outbound credential comes from an AgentCore Identity credential provider created out of band (no secret in Terraform state) and is injected by the Gateway; the agent runtime never holds it.
-      endpoint                       Streamable HTTP MCP endpoint (https://).
+    Customer MCP servers served behind the AgentCore Gateway (requires enable_mcp_gateway), each either a remote MCP server (endpoint + auth) or a Lambda function (lambda). The map key is the Gateway target name: agents see its tools as <name>___<tool>, and the allow rules below refer to it, so treat it as immutable; renaming creates a new target. The outbound credential comes from an AgentCore Identity credential provider created out of band (no secret in Terraform state) and is injected by the Gateway; the agent runtime never holds it.
+      endpoint                       Streamable HTTP MCP endpoint (https://). Requires auth; excludes lambda.
+      lambda.function_arn            Lambda function the Gateway invokes with its own role (no auth). Excludes endpoint, auth and private_endpoint.
+      lambda.tool_schema             JSON array of the function's tools: [{name, description, inputSchema}].
       description                    Optional target description.
       auth.type                      "oauth" (client credentials) or "api_key".
       auth.credential_provider_arn   AgentCore Identity OAuth2 or API-key credential provider ARN.
@@ -268,9 +270,13 @@ variable "mcp_gateway_custom_targets" {
     Only stage sessions are ever allowed; discussion and conflict sessions are denied. Changes to allow rules, endpoints and providers apply live, including to stages that are already running.
   EOT
   type = map(object({
-    endpoint    = string
+    endpoint    = optional(string)
     description = optional(string)
-    auth = object({
+    lambda = optional(object({
+      function_arn = string
+      tool_schema  = string
+    }))
+    auth = optional(object({
       type                    = string
       credential_provider_arn = string
       secret_arn              = string
@@ -279,7 +285,7 @@ variable "mcp_gateway_custom_targets" {
       credential_location     = optional(string)
       parameter_name          = optional(string)
       prefix                  = optional(string)
-    })
+    }))
     private_endpoint = optional(object({
       managed_vpc_resource = optional(object({
         vpc_identifier           = string
@@ -311,9 +317,30 @@ variable "mcp_gateway_custom_targets" {
   }
   validation {
     condition = alltrue([
-      for t in values(var.mcp_gateway_custom_targets) : can(regex("^https://[^\\s]+$", t.endpoint))
+      for t in values(var.mcp_gateway_custom_targets) :
+      t.lambda == null ? (t.endpoint != null && t.auth != null) : (t.endpoint == null && t.auth == null && t.private_endpoint == null)
+    ])
+    error_message = "mcp_gateway_custom_targets entries set either endpoint and auth (a remote MCP server, optionally with private_endpoint) or lambda alone."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) : can(regex("^https://[^\\s]+$", t.endpoint)) if t.endpoint != null
     ])
     error_message = "mcp_gateway_custom_targets endpoints must be https:// URLs."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      can(regex("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,64}(:[A-Za-z0-9_$-]+)?$", t.lambda.function_arn)) &&
+      try(length(jsondecode(t.lambda.tool_schema)) > 0 && alltrue([
+        for tool in jsondecode(t.lambda.tool_schema) :
+        can(regex("^[A-Za-z0-9_-]{1,64}$", tool.name)) && !strcontains(tool.name, "___") &&
+        try(trimspace(tool.description) != "", false) &&
+        try(contains(["array", "boolean", "integer", "number", "object", "string"], tool.inputSchema.type), false)
+      ]), false)
+      if t.lambda != null
+    ])
+    error_message = "mcp_gateway_custom_targets lambda.function_arn must be a Lambda function ARN (optionally qualified), and lambda.tool_schema a non-empty JSON array of tools, each with a name (letters, digits, _ and -, no ___), a description and an inputSchema whose type is array, boolean, integer, number, object or string."
   }
   validation {
     # The ARN as returned by Create*CredentialProvider (`bedrock-agentcore`). It
@@ -323,6 +350,7 @@ variable "mcp_gateway_custom_targets" {
       for t in values(var.mcp_gateway_custom_targets) :
       (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
       (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
+      if t.auth != null
     ])
     error_message = "mcp_gateway_custom_targets auth.type must be \"oauth\" or \"api_key\" with a matching AgentCore Identity credential provider ARN in the arn:<partition>:bedrock-agentcore:... form returned by create-oauth2-credential-provider or create-api-key-credential-provider (not acps)."
   }
@@ -330,6 +358,7 @@ variable "mcp_gateway_custom_targets" {
     condition = alltrue([
       for t in values(var.mcp_gateway_custom_targets) :
       can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", t.auth.secret_arn))
+      if t.auth != null
     ])
     error_message = "mcp_gateway_custom_targets auth.secret_arn must be the Secrets Manager secret ARN of the credential provider."
   }
@@ -342,6 +371,7 @@ variable "mcp_gateway_custom_targets" {
         length(t.auth.scopes) == 0 && t.auth.custom_parameters == null &&
         contains(["HEADER", "QUERY_PARAMETER", "-"], t.auth.credential_location == null ? "-" : t.auth.credential_location)
       )
+      if t.auth != null
     ])
     error_message = "mcp_gateway_custom_targets: scopes and custom_parameters apply to oauth only; credential_location (HEADER or QUERY_PARAMETER), parameter_name and prefix apply to api_key only."
   }
@@ -356,6 +386,7 @@ variable "mcp_gateway_custom_targets" {
         alltrue([for k, v in t.auth.custom_parameters : trimspace(k) != "" && length(k) <= 256 && v != null && length(v) >= 1 && length(v) <= 2048]),
         false
       ))
+      if t.auth != null
     ])
     error_message = "mcp_gateway_custom_targets auth.scopes holds at most 100 scopes of 1-64 characters each; auth.custom_parameters holds at most 10 entries with keys of 1-256 characters and values of 1-2048 characters."
   }

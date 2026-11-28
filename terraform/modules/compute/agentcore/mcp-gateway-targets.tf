@@ -4,10 +4,12 @@
 # runtime CLI -> aidlc-gateway-tools proxy (SigV4, grant) -> Gateway (AWS_IAM)
 #   -> mcp-interceptor (grant, session, live scope; per-target allow rule)
 #   -> customer MCP server, called with the credential the Gateway fetches
-#      from AgentCore Identity (OAuth client credentials or API key)
+#      from AgentCore Identity (OAuth client credentials or API key), or
+#   -> customer Lambda function, invoked with the Gateway role
 #
-# The credential providers are created out of band and referenced by ARN, so
-# no customer secret is in Terraform state, in the runtime or in the Lambdas.
+# The credential providers and customer functions are created out of band and
+# referenced by ARN, so no customer secret is in Terraform state, in the
+# runtime or in the Lambdas.
 # The interceptor receives the allow rules only (names, spaces, stages, tools).
 # Each target only accepts the x-aidlc-caller header the interceptor derives
 # from the signed grant (lambda/shared/mcp/gateway-custom-targets.js).
@@ -15,6 +17,10 @@
 
 locals {
   mcp_gateway_custom_targets = local.mcp_gateway_enabled ? var.mcp_gateway_custom_targets : {}
+  # Remote MCP servers carry an AgentCore Identity credential; Lambda targets
+  # are invoked with the Gateway role and carry none.
+  mcp_gateway_custom_remote_targets = { for name, t in local.mcp_gateway_custom_targets : name => t if t.lambda == null }
+  mcp_gateway_custom_lambda_targets = { for name, t in local.mcp_gateway_custom_targets : name => t if t.lambda != null }
   # The registry the interceptor enforces: no endpoint, no credential.
   mcp_gateway_custom_targets_registry = jsonencode({
     for name, target in var.mcp_gateway_custom_targets : name => {
@@ -70,7 +76,7 @@ resource "terraform_data" "mcp_gateway_custom_targets_preconditions" {
 # an API key"). A provider secret encrypted with a customer managed key also
 # needs kms:Decrypt for this role (not granted here).
 resource "aws_iam_role_policy" "mcp_gateway_custom_targets" {
-  count = length(local.mcp_gateway_custom_targets) > 0 ? 1 : 0
+  count = length(local.mcp_gateway_custom_remote_targets) > 0 ? 1 : 0
 
   name = "custom-mcp-target-credentials"
   role = aws_iam_role.mcp_gateway[0].id
@@ -87,29 +93,61 @@ resource "aws_iam_role_policy" "mcp_gateway_custom_targets" {
         Sid      = "CustomTargetProviderSecrets"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = sort(distinct([for t in values(local.mcp_gateway_custom_targets) : t.auth.secret_arn]))
+        Resource = sort(distinct([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.secret_arn]))
       },
-      ], anytrue([for t in values(local.mcp_gateway_custom_targets) : t.auth.type == "oauth"]) ? [{
+      ], anytrue([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.type == "oauth"]) ? [{
         Sid    = "CustomTargetOauthTokens"
         Effect = "Allow"
         Action = ["bedrock-agentcore:GetResourceOauth2Token"]
         Resource = concat(
-          sort(distinct([for t in values(local.mcp_gateway_custom_targets) : t.auth.credential_provider_arn if t.auth.type == "oauth"])),
+          sort(distinct([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.credential_provider_arn if t.auth.type == "oauth"])),
           [local.mcp_gateway_token_vault_arn],
           local.mcp_gateway_workload_identity_arns,
         )
       }] : [],
-      anytrue([for t in values(local.mcp_gateway_custom_targets) : t.auth.type == "api_key"]) ? [{
+      anytrue([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.type == "api_key"]) ? [{
         Sid    = "CustomTargetApiKeys"
         Effect = "Allow"
         Action = ["bedrock-agentcore:GetResourceApiKey"]
         Resource = concat(
-          sort(distinct([for t in values(local.mcp_gateway_custom_targets) : t.auth.credential_provider_arn if t.auth.type == "api_key"])),
+          sort(distinct([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.credential_provider_arn if t.auth.type == "api_key"])),
           [local.mcp_gateway_token_vault_arn],
           local.mcp_gateway_workload_identity_arns,
         )
     }] : [])
   })
+}
+
+# Customer Lambda targets: the Gateway role may invoke exactly these functions,
+# and reads their tool schemas from the artifacts bucket (mcp-gateway/*), which
+# the base Gateway policy already allows.
+resource "aws_iam_role_policy" "mcp_gateway_custom_lambda_targets" {
+  count = length(local.mcp_gateway_custom_lambda_targets) > 0 ? 1 : 0
+
+  name = "custom-mcp-target-lambdas"
+  role = aws_iam_role.mcp_gateway[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeCustomTargetLambdas"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = sort(distinct([for t in values(local.mcp_gateway_custom_lambda_targets) : t.lambda.function_arn]))
+    }]
+  })
+}
+
+resource "aws_s3_object" "mcp_gateway_custom_tool_schema" {
+  for_each = local.mcp_gateway_custom_lambda_targets
+
+  bucket       = var.artifacts_bucket_name
+  key          = "mcp-gateway/custom-${each.key}-${sha256(each.value.lambda.tool_schema)}.json"
+  content      = each.value.lambda.tool_schema
+  content_type = "application/json"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_bedrockagentcore_gateway_target" "custom" {
@@ -121,15 +159,33 @@ resource "aws_bedrockagentcore_gateway_target" "custom" {
 
   target_configuration {
     mcp {
-      mcp_server {
-        endpoint = each.value.endpoint
+      dynamic "mcp_server" {
+        for_each = each.value.lambda == null ? [each.value.endpoint] : []
+        content {
+          endpoint = mcp_server.value
+        }
+      }
+      dynamic "lambda" {
+        for_each = each.value.lambda == null ? [] : [each.value.lambda]
+        content {
+          lambda_arn = lambda.value.function_arn
+          tool_schema {
+            s3 {
+              uri = "s3://${var.artifacts_bucket_name}/${aws_s3_object.mcp_gateway_custom_tool_schema[each.key].key}"
+            }
+          }
+        }
       }
     }
   }
 
   credential_provider_configuration {
+    dynamic "gateway_iam_role" {
+      for_each = each.value.lambda == null ? [] : [each.value.lambda]
+      content {}
+    }
     dynamic "oauth" {
-      for_each = each.value.auth.type == "oauth" ? [each.value.auth] : []
+      for_each = try(each.value.auth.type, null) == "oauth" ? [each.value.auth] : []
       content {
         provider_arn      = oauth.value.credential_provider_arn
         scopes            = oauth.value.scopes
@@ -138,7 +194,7 @@ resource "aws_bedrockagentcore_gateway_target" "custom" {
       }
     }
     dynamic "api_key" {
-      for_each = each.value.auth.type == "api_key" ? [each.value.auth] : []
+      for_each = try(each.value.auth.type, null) == "api_key" ? [each.value.auth] : []
       content {
         provider_arn              = api_key.value.credential_provider_arn
         credential_location       = api_key.value.credential_location
@@ -179,6 +235,7 @@ resource "aws_bedrockagentcore_gateway_target" "custom" {
   depends_on = [
     terraform_data.mcp_gateway_custom_targets_preconditions,
     aws_iam_role_policy.mcp_gateway_custom_targets,
+    aws_iam_role_policy.mcp_gateway_custom_lambda_targets,
   ]
 }
 
@@ -224,11 +281,11 @@ resource "aws_iam_role_policy" "agentcore_deny_custom_mcp_credentials" {
         Action   = ["bedrock-agentcore:GetResourceOauth2Token", "bedrock-agentcore:GetResourceApiKey"]
         Resource = "*"
       },
-      ], length(local.mcp_gateway_custom_targets) > 0 ? [{
+      ], length(local.mcp_gateway_custom_remote_targets) > 0 ? [{
         Sid      = "DenyCustomTargetProviderSecrets"
         Effect   = "Deny"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = sort(distinct([for t in values(local.mcp_gateway_custom_targets) : t.auth.secret_arn]))
+        Resource = sort(distinct([for t in values(local.mcp_gateway_custom_remote_targets) : t.auth.secret_arn]))
     }] : [])
   })
 

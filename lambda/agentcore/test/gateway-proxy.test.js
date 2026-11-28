@@ -202,7 +202,7 @@ describe('gateway MCP proxy — customer tool passthrough', () => {
 
   // A real MCP server standing in for the Gateway, so the passthrough speaks
   // the protocol end to end.
-  const connectThroughGateway = async ({ onCall } = {}) => {
+  const connectThroughGateway = async ({ onCall, lambdaTargets } = {}) => {
     const gatewayServer = new Server(
       { name: 'gateway', version: '1' },
       { capabilities: { tools: {} } },
@@ -222,7 +222,7 @@ describe('gateway MCP proxy — customer tool passthrough', () => {
     const gatewayClient = new Client({ name: 'aidlc-gateway-proxy', version: '1' });
     await gatewayClient.connect(proxySide);
 
-    const passthrough = createGatewayPassthroughServer({ client: gatewayClient });
+    const passthrough = createGatewayPassthroughServer({ client: gatewayClient, lambdaTargets });
     const [cliSide, serverSide] = InMemoryTransport.createLinkedPair();
     await passthrough.connect(serverSide);
     const cli = new Client({ name: 'cli', version: '1' });
@@ -253,6 +253,44 @@ describe('gateway MCP proxy — customer tool passthrough', () => {
     expect(calls).toEqual([{ name: 'confluence___search', arguments: { query: 'x' } }]);
     expect(got.content).toEqual(result.content);
     expect(got.structuredContent).toEqual({ hits: 1 });
+  });
+
+  // The Gateway serializes a Lambda target's MCP result into one text part.
+  const gatewayWrapped = (envelope) => ({
+    content: [{ type: 'text', text: JSON.stringify(envelope) }],
+  });
+
+  it("restores a Lambda target's error flag and content, leaving remote targets unchanged", async () => {
+    const lambdaError = {
+      content: [{ type: 'text', text: 'Space not found' }],
+      isError: true,
+    };
+    const { cli } = await connectThroughGateway({
+      lambdaTargets: new Set(['codekb']),
+      onCall: async () => gatewayWrapped(lambdaError),
+    });
+    expect(await cli.callTool({ name: 'codekb___find_component', arguments: {} })).toEqual(
+      lambdaError,
+    );
+    const remote = await cli.callTool({ name: 'confluence___search', arguments: {} });
+    expect(remote.isError).toBeUndefined();
+    expect(remote.content).toEqual(gatewayWrapped(lambdaError).content);
+  });
+
+  it("returns a Lambda target's typed content parts as the function sent them", async () => {
+    const lambdaResult = {
+      content: [
+        { type: 'text', text: 'two hits' },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+      ],
+    };
+    const { cli } = await connectThroughGateway({
+      lambdaTargets: new Set(['codekb']),
+      onCall: async () => gatewayWrapped(lambdaResult),
+    });
+    const got = await cli.callTool({ name: 'codekb___find_component', arguments: {} });
+    expect(got.content).toEqual(lambdaResult.content);
+    expect(got.isError).toBeUndefined();
   });
 
   it('refuses built-in and unqualified tools without calling the Gateway', async () => {

@@ -199,6 +199,7 @@ run "customer_targets_behind_the_gateway" {
   assert {
     condition = (
       output.runtime_environment_variables["AIDLC_MCP_GATEWAY_CUSTOM_TARGETS"] == "true" &&
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_LAMBDA_TARGETS") &&
       !anytrue([for v in values(output.runtime_environment_variables) : strcontains(v, "mcp.confluence.example.com") || strcontains(v, "token-vault") || strcontains(v, "secretsmanager")])
     )
     error_message = "The runtime only learns that customer targets exist, never their endpoints or credential providers."
@@ -228,7 +229,8 @@ run "no_customer_targets_by_default" {
     condition = (
       length(aws_bedrockagentcore_gateway_target.custom) == 0 &&
       length(aws_iam_role_policy.mcp_gateway_custom_targets) == 0 &&
-      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_CUSTOM_TARGETS")
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_CUSTOM_TARGETS") &&
+      !contains(keys(output.runtime_environment_variables), "AIDLC_MCP_GATEWAY_LAMBDA_TARGETS")
     )
     error_message = "Without customer targets nothing changes."
   }
@@ -735,4 +737,250 @@ run "rejects_an_unknown_runtime_mcp_profile" {
     runtime_mcp_credentials = "deny"
   }
   expect_failures = [var.runtime_mcp_credentials]
+}
+
+# A customer Lambda target sits next to a remote one: the Gateway invokes it
+# with its own role, reads its tool schema from the artifacts bucket, and it
+# receives the same caller envelope. It carries no Identity credential.
+run "customer_lambda_target_behind_the_gateway" {
+  command = apply
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      jira = {
+        endpoint = "https://mcp.jira.example.com/mcp"
+        auth = {
+          type                    = "api_key"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/apikeycredentialprovider/jira"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:bedrock-agentcore-identity!default/apikey/jira-GhIjKl"
+          credential_location     = "HEADER"
+          parameter_name          = "X-Api-Key"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"space_id\":{\"type\":\"string\"}},\"required\":[\"space_id\"]}}]"
+        }
+        allow = { project_ids = ["p-1", "p-2"] }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      aws_bedrockagentcore_gateway_target.custom["codekb"].target_configuration[0].mcp[0].lambda[0].lambda_arn == "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools" &&
+      length(aws_bedrockagentcore_gateway_target.custom["codekb"].target_configuration[0].mcp[0].mcp_server) == 0 &&
+      length(aws_bedrockagentcore_gateway_target.custom["codekb"].credential_provider_configuration[0].gateway_iam_role) == 1 &&
+      length(aws_bedrockagentcore_gateway_target.custom["codekb"].credential_provider_configuration[0].oauth) == 0 &&
+      length(aws_bedrockagentcore_gateway_target.custom["codekb"].credential_provider_configuration[0].api_key) == 0 &&
+      length(aws_bedrockagentcore_gateway_target.custom["jira"].target_configuration[0].mcp[0].lambda) == 0 &&
+      length(aws_bedrockagentcore_gateway_target.custom["jira"].credential_provider_configuration[0].gateway_iam_role) == 0
+    )
+    error_message = "A Lambda target is invoked with the Gateway role and carries no Identity credential; remote targets are unchanged."
+  }
+  assert {
+    condition = (
+      aws_bedrockagentcore_gateway_target.custom["codekb"].target_configuration[0].mcp[0].lambda[0].tool_schema[0].s3[0].uri ==
+      "s3://artifacts/${aws_s3_object.mcp_gateway_custom_tool_schema["codekb"].key}" &&
+      startswith(aws_s3_object.mcp_gateway_custom_tool_schema["codekb"].key, "mcp-gateway/custom-codekb-") &&
+      jsondecode(aws_s3_object.mcp_gateway_custom_tool_schema["codekb"].content)[0].name == "get_stats" &&
+      toset(keys(aws_s3_object.mcp_gateway_custom_tool_schema)) == toset(["codekb"])
+    )
+    error_message = "The Lambda target's tool schema is published under mcp-gateway/, which the Gateway role may read."
+  }
+  assert {
+    condition = (
+      jsondecode(aws_iam_role_policy.mcp_gateway_custom_lambda_targets[0].policy).Statement == [{
+        Sid      = "InvokeCustomTargetLambdas"
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = ["arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"]
+      }] &&
+      aws_iam_role_policy.mcp_gateway_custom_lambda_targets[0].role == aws_iam_role.mcp_gateway[0].id
+    )
+    error_message = "Only the Gateway role may invoke the customer function, and nothing else is granted for it."
+  }
+  assert {
+    condition = (
+      toset(flatten([for s in jsondecode(aws_iam_role_policy.mcp_gateway_custom_targets[0].policy).Statement : s.Resource if contains(flatten([s.Action]), "secretsmanager:GetSecretValue")])) == toset([
+        "arn:aws:secretsmanager:eu-central-1:123456789012:secret:bedrock-agentcore-identity!default/apikey/jira-GhIjKl",
+      ]) &&
+      toset(aws_bedrockagentcore_gateway_target.custom["codekb"].metadata_configuration[0].allowed_request_headers) == toset(["x-aidlc-caller"])
+    )
+    error_message = "Credentials are granted for remote targets only, and the Lambda target receives only the caller envelope."
+  }
+  assert {
+    condition     = jsondecode(local.mcp_gateway_custom_targets_registry).codekb == { projectIds = ["p-1", "p-2"], stageIds = null, tools = null }
+    error_message = "The interceptor enforces the Lambda target's allow rule like any customer target."
+  }
+  assert {
+    condition = (
+      output.runtime_environment_variables["AIDLC_MCP_GATEWAY_LAMBDA_TARGETS"] == "codekb" &&
+      !anytrue([for v in values(output.runtime_environment_variables) : strcontains(v, "arn:aws:lambda")])
+    )
+    error_message = "The runtime learns the Lambda target names, to unwrap their results, and never their function ARNs."
+  }
+}
+
+run "lambda_only_targets_need_no_credential_policy" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+
+  assert {
+    condition     = length(aws_iam_role_policy.mcp_gateway_custom_targets) == 0 && length(aws_iam_role_policy.mcp_gateway_custom_lambda_targets) == 1
+    error_message = "With only Lambda targets the Gateway role gets the invoke grant and no Identity permission."
+  }
+}
+
+run "rejects_lambda_with_endpoint" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        endpoint = "https://mcp.example.com/mcp"
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_lambda_with_auth" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        auth = {
+          type                    = "oauth"
+          credential_provider_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:token-vault/default/oauth2credentialprovider/x"
+          secret_arn              = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:x"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_remote_target_without_auth" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      wiki = {
+        endpoint = "https://mcp.example.com/mcp"
+        allow    = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_invalid_lambda_tool_schema" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"bad___name\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_lambda_tool_without_description" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_lambda_tool_with_unsupported_input_type" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:codekb-tools"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"map\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "rejects_non_lambda_function_arn" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    mcp_gateway_custom_targets = {
+      codekb = {
+        lambda = {
+          function_arn = "arn:aws:iam::123456789012:role/codekb"
+          tool_schema  = "[{\"name\":\"get_stats\",\"description\":\"Stats\",\"inputSchema\":{\"type\":\"object\"}}]"
+        }
+        allow = { project_ids = ["p-1"] }
+      }
+    }
+  }
+  expect_failures = [var.mcp_gateway_custom_targets]
 }

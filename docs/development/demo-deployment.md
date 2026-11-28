@@ -94,6 +94,28 @@ The workflow validates the provider file with `scripts/sso-config.mjs` and write
 
 For SAML, demo secrets must use `metadata.url` or inline `metadata.xml`. The workflow rejects `metadata.file` because a GitHub secret contains no companion XML files. Local installer and standalone deployment provider files continue to support `metadata.file`.
 
+### Optional MCP Gateway and customer MCP servers
+
+The optional `MCP_GATEWAY_CONFIG` environment variable carries the
+[MCP Gateway](../concepts/architecture.md#agent-runtime) rollout variables as one JSON object. The workflow validates it with
+`scripts/gateway-config.mjs` and writes it as `prod.gateway.tfvars.json`, which the deployment plan includes. Strings are read literally, so tool descriptions may contain `${...}`. Only these keys are accepted:
+
+| Key                          | Terraform variable                                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `enable_mcp_gateway`         | Serve the built-in tools through the AgentCore Gateway                                                |
+| `enable_engine_data`         | Route the engine's data access through grant-verifying services                                       |
+| `enforce_runtime_grants`     | Retire the runtime role's direct data access                                                          |
+| `runtime_mcp_credentials`    | `allow` or `gateway_only`                                                                             |
+| `mcp_gateway_custom_targets` | [Customer MCP servers](../using-the-platform/customer-mcp-servers.md#2-declare-the-target) as targets |
+
+For example, a first step that only enables the Gateway:
+
+```json
+{ "enable_mcp_gateway": true }
+```
+
+The value holds credential provider and secret ARNs, never credential values, so it is a variable rather than a secret. Turn the flags on one deployment at a time, in the order of the table, and drain running intents before each one: the deployment refuses a plan that moves running executions onto the Gateway. Unset the variable to keep the defaults. Release-tag deployments run the selected release's scripts, so setting the variable on a release environment requires a release that contains `scripts/gateway-config.mjs`.
+
 `AUTH_DOMAIN` is not resolved before deployment, because its DNS record can only be created after the first apply. Its parent must have a public DNS A record; Terraform waits for that record before creating the Cognito domain. To enable SSO with a custom login domain:
 
 1. Set `AUTH_DOMAIN` (and `AUTH_CERTIFICATE_ARN` if needed), leave `AUTH_DOMAIN_ACTIVE` unset or `false`, and deploy. Preserve `AUTH_MODE` and `SSO_CONFIG` on an existing SSO deployment; for a new local deployment, leave them unset.

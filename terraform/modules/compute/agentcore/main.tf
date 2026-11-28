@@ -818,6 +818,10 @@ locals {
     # Tells the runtime to materialize the customer-tool proxy; it carries no
     # target, endpoint or credential.
     AIDLC_MCP_GATEWAY_CUSTOM_TARGETS = "true"
+    } : {}, length(local.mcp_gateway_custom_lambda_targets) > 0 ? {
+    # Names of the Lambda targets, whose results the Gateway wraps in a text
+    # part; the customer-tool proxy unwraps them. Names only, no ARN.
+    AIDLC_MCP_GATEWAY_LAMBDA_TARGETS = join(",", sort(keys(local.mcp_gateway_custom_lambda_targets)))
     } : {}, local.engine_data_enabled ? {
     ENGINE_DATA_FUNCTION    = module.engine_data_lambda[0].lambda_function_name
     SOURCE_CONTROL_FUNCTION = local.source_control_runtime_alias_arn

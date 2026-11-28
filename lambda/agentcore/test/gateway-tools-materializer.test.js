@@ -55,6 +55,15 @@ describe('customer-tool proxy launch', () => {
     });
   });
 
+  it('passes the Lambda target names to the passthrough proxy when the runtime has them', () => {
+    const tools = gatewayToolsLaunch({
+      launch,
+      env: { ...GATEWAY_ENV, AIDLC_MCP_GATEWAY_LAMBDA_TARGETS: 'codekb' },
+      scope,
+    });
+    expect(tools.trustedEnv.AIDLC_MCP_GATEWAY_LAMBDA_TARGETS).toBe('codekb');
+  });
+
   it('also serves dispatched persona sessions, whose scope names no mode', () => {
     const { mode: _mode, ...personaScope } = scope;
     expect(
