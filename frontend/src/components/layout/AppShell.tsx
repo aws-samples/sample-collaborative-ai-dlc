@@ -469,6 +469,11 @@ export function AppShell() {
                 {showActivity && !panelsInline && (
                   <aside
                     ref={activityOverlayRef}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape' || event.defaultPrevented) return;
+                      event.stopPropagation();
+                      closeActivityPanel();
+                    }}
                     id={ACTIVITY_PANEL_ID}
                     aria-label="Activity panel"
                     tabIndex={-1}

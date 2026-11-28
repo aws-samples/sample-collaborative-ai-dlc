@@ -458,6 +458,21 @@ describe('AppShell panel default behavior', () => {
     await waitFor(() => expect(preview).toHaveFocus());
   });
 
+  it('closes a narrow activity overlay with Escape and restores its invoking control', async () => {
+    setViewport(false);
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    const preview = screen.getByTestId('open-preview');
+    await user.click(preview);
+    const close = await screen.findByRole('button', { name: 'Close activity panel' });
+    await waitFor(() => expect(close).toHaveFocus());
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(preview).toHaveFocus());
+  });
+
   it('keeps the activity overlay closed on first render below 1024px even when a desktop preference says open', () => {
     setViewport(false);
     window.localStorage.setItem(ACTIVITY_PANEL_OPEN_STORAGE_KEY, 'true');
