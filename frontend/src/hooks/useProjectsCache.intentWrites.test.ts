@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { renderHook, waitFor } from '@/test/query';
+import { queryClient } from '@/lib/queryClient';
 
 const get = vi.fn();
 const post = vi.fn();
@@ -14,7 +16,7 @@ vi.mock('@/services/projects', () => ({
   projectsService: { list: async () => [{ id: 'p1', name: 'Space', kind: 'v2' }] },
 }));
 
-import { getProjectsWithSprints } from './useProjectsCache';
+import { useProjectsCache } from './useProjectsCache';
 import { intentsService } from '@/services/intents';
 
 const intent = (id: string, status: string) => ({
@@ -29,6 +31,8 @@ describe('useProjectsCache — intent writes', () => {
   let listed: ReturnType<typeof intent>[];
 
   beforeEach(() => {
+    queryClient.clear();
+    sessionStorage.clear();
     listed = [intent('i1', 'RUNNING')];
     get.mockReset().mockImplementation(async (path: string) => {
       if (path === '/projects/p1/intents') return listed;
@@ -38,33 +42,34 @@ describe('useProjectsCache — intent writes', () => {
     del.mockReset();
   });
 
-  it('re-reads the spaces cache after a successful create, cancel and delete', async () => {
-    const titles = async () => (await getProjectsWithSprints())[0].intents.map((i) => i.id);
-    const statuses = async () => (await getProjectsWithSprints())[0].intents.map((i) => i.status);
-    expect(await titles()).toEqual(['i1']);
+  it('re-reads the shown space list after a successful create, cancel and delete', async () => {
+    const { result } = renderHook(() => useProjectsCache());
+    const ids = () => result.current.projects[0]?.intents.map((i) => `${i.id}:${i.status}`);
+    await waitFor(() => expect(ids()).toEqual(['i1:RUNNING']));
 
     listed = [intent('i1', 'RUNNING'), intent('i2', 'DRAFT')];
     post.mockResolvedValueOnce(intent('i2', 'DRAFT'));
     await intentsService.create('p1', { title: 'i2' } as never);
-    await vi.waitFor(async () => expect(await titles()).toEqual(['i1', 'i2']));
+    await waitFor(() => expect(ids()).toEqual(['i1:RUNNING', 'i2:DRAFT']));
 
     listed = [intent('i1', 'CANCELLED'), intent('i2', 'DRAFT')];
     post.mockResolvedValueOnce(intent('i1', 'CANCELLED'));
     await intentsService.cancel('p1', 'i1');
-    await vi.waitFor(async () => expect(await statuses()).toEqual(['CANCELLED', 'DRAFT']));
+    await waitFor(() => expect(ids()).toEqual(['i1:CANCELLED', 'i2:DRAFT']));
 
     listed = [intent('i1', 'CANCELLED')];
     del.mockResolvedValueOnce(undefined);
     await intentsService.delete('p1', 'i2');
-    await vi.waitFor(async () => expect(await titles()).toEqual(['i1']));
+    await waitFor(() => expect(ids()).toEqual(['i1:CANCELLED']));
   });
 
-  it('keeps the cached list when the write fails', async () => {
-    await getProjectsWithSprints();
+  it('keeps the shown list when the write fails', async () => {
+    const { result } = renderHook(() => useProjectsCache());
+    await waitFor(() => expect(result.current.projects[0]?.intents).toHaveLength(1));
     const reads = get.mock.calls.length;
     post.mockRejectedValueOnce(new Error('409'));
     await expect(intentsService.create('p1', { title: 'x' } as never)).rejects.toThrow('409');
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(get.mock.calls.length).toBe(reads);
   });
 });

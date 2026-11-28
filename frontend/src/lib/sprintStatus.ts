@@ -1,5 +1,6 @@
 import type { Sprint } from '@/services/sprints';
 import type { Intent } from '@/services/intents';
+import { deriveIntentStatus, type DerivedIntentStatus } from '@/lib/statusModel';
 
 export type EffectiveSprintStatus =
   | 'passed'
@@ -21,8 +22,31 @@ export function effectiveSprintStatus(sprint: Sprint | null | undefined): Effect
   return 'idle';
 }
 
-export function isAttentionStatus(status: EffectiveSprintStatus): boolean {
-  return status === 'waiting' || status === 'failed';
+export function intentAttention(intent: {
+  status: Intent['status'];
+  pendingHumanTaskId?: string | null;
+  resumeRequired?: Intent['resumeRequired'] | boolean;
+}): 'resume' | 'input' | 'failed' | null {
+  if (intent.status === 'FAILED') return 'failed';
+  if (intent.status !== 'WAITING') return null;
+  if (intent.resumeRequired) return 'resume';
+  return intent.pendingHumanTaskId ? 'input' : null;
+}
+
+/**
+ * "Needs attention": a human must act — answer, resume, deal with a failure,
+ * or unstick a stalled run. The one rule behind the Spaces inbox, the sidebar
+ * filter and its count, and the space badges. Pass the `status` the intent's
+ * pill shows (useIntentStatusReader) so "stalled" agrees with it; without it
+ * the status is derived from the intent's own timestamps.
+ */
+export function needsAttention(
+  intent: Parameters<typeof intentAttention>[0] & Pick<Intent, 'updatedAt' | 'createdAt'>,
+  now: number = Date.now(),
+  status: DerivedIntentStatus = deriveIntentStatus(intent, { now }),
+): boolean {
+  if (intentAttention(intent) !== null) return true;
+  return status.stalled;
 }
 
 export function isActiveStatus(status: EffectiveSprintStatus): boolean {

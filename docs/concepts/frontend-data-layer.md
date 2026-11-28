@@ -74,7 +74,7 @@ Signing in after a session ended, or switching users, still reloads the whole pa
 Saves go through `afterWrite(write, ...prefixes)` in `lib/afterWrite.ts`. When the save finishes, it marks every key under each given prefix as out of date. It also restarts any read of those keys that started before the save, so whoever waits on that read gets the data after the save. Data a screen is showing reloads at once; other data reloads the next time it is needed.
 
 - Workflow saves refresh the workflow's keys (including its compiled views) and the workflow list.
-- Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status. They also re-read the spaces cache (`useProjectsCache`) that the sidebar and dashboard still read outside TanStack Query.
+- Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status. The spaces view behind the sidebar, the dashboard, and the command palette shows those lists without reloading them on its own, so it re-reads a list it shows as soon as that list is marked out of date.
 
 `afterWrite` refreshes even when the save fails, because the server may have applied the change before the error. Intent changes refresh only when they succeed. Keep this choice in the service, so every caller follows the same rule.
 
@@ -89,7 +89,8 @@ When the user is about to open a page, the app starts loading that page's code a
 - which code to load (the page is split into its own file and loaded on demand);
 - who may open it (for example platform admins only);
 - the data the page needs first, and data that can only be loaded once that first data is known;
-- whether the page is _heavy_ (large data, see below).
+- whether the page is _heavy_ (large data, see below);
+- the pages the user is likely to open next from it.
 
 The page and its prefetch use the same query helper, so they share one key and one request.
 
@@ -117,6 +118,10 @@ The intent graph and very large intents (cached detail over 512 KiB) are heavy. 
 
 Early-loaded data goes into the same cache, under the same memory limit, as any other data. There is no separate store for it.
 
+### Loading the likely next page
+
+`useIdleNext` waits until the current page has its first data. Then, while the browser is idle, it loads the pages the user is likely to open next and the rows the sidebar offers.
+
 The intent detail query starts loading the compiled workflow as soon as the detail arrives for a page that shows it. When the detail was only loaded early, the page's prefetch loads the compiled workflow itself. The intent page reads the shared detail, compiled workflow, and workflow detail queries; it only keeps the live transcript and artifact text of its own.
 
 Never load these early:
@@ -136,9 +141,13 @@ To reload data on a timer, set `refetchInterval` on the query that owns it. Leav
 
 `useVisiblePoll` is only for work that is not a query, such as catching up the transcript panes that are on screen. Do not add another timer to refresh an ordinary query.
 
-## Reading data without keeping it
+## Intent status from the cache
 
-`useQueryData(key)` reads what is already in the cache and re-renders when it changes. It does not send a request and does not keep the data in memory longer. Use it for small status views that should update when data arrives but should not hold on to it.
+`useQueryData(key)` reads what is already in the cache and re-renders when it changes. It does not send a request and does not keep the data in memory longer. Status pills use it: they update when an intent's detail arrives, and fall back to the list summary when the detail is freed.
+
+`useIntentStatus` uses the cached detail only when it is at least as recent as the list summary. So the sidebar shows the same status as the intent page, without keeping every visited intent in memory or sending a request per row.
+
+Filters and counts over a list read the same status through `useIntentStatusReader`, so “Needs your attention”, its count, the space badges and the live dot always agree with the pills.
 
 ## Checklist for changes
 

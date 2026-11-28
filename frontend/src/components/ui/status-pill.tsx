@@ -18,7 +18,8 @@ interface StatusPillProps<K extends StatusKind> {
   /** Stalled: last activity. Otherwise: when the state began (shown as an age). */
   since?: string | null;
   stalled?: boolean;
-  size?: 'sm' | 'md';
+  /** `xs` is for dense navigation (the sidebar): same text size, tighter box. */
+  size?: 'xs' | 'sm' | 'md';
   /**
    * Short label for dense lists ("Waiting · 108 d", "Stalled · 4 mo"). The full
    * label stays available to assistive technology and as the title. Never
@@ -59,7 +60,11 @@ export function StatusPill<K extends StatusKind>({
       title={compact && !hint ? label : undefined}
       className={cn(
         'inline-flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-full font-medium',
-        size === 'md' ? 'px-2.5 py-0.5 text-xs leading-5' : 'px-2 py-0.5 text-2xs',
+        size === 'md'
+          ? 'px-2.5 py-0.5 text-xs leading-5'
+          : size === 'xs'
+            ? 'gap-1 px-1.5 py-0 text-2xs'
+            : 'px-2 py-0.5 text-2xs',
         TONE_CLASSES[tone].pill,
         hint &&
           'cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

@@ -11,6 +11,7 @@ const shellTestState = vi.hoisted(() => ({
   installNavIntent: vi.fn(),
   uninstallNavIntent: vi.fn(),
   notifyNavigation: vi.fn(),
+  useIdleNext: vi.fn(),
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -24,6 +25,9 @@ vi.mock('@/lib/navIntent', () => ({
 }));
 vi.mock('@/lib/routePrefetch', () => ({
   notifyNavigation: (...args: unknown[]) => shellTestState.notifyNavigation(...args),
+}));
+vi.mock('@/hooks/useIdleNext', () => ({
+  useIdleNext: (...args: unknown[]) => shellTestState.useIdleNext(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -200,6 +204,12 @@ it('installs the delegated listener once, updates its location, and uninstalls o
   expect(shellTestState.installNavIntent).toHaveBeenCalledTimes(1);
   view.unmount();
   expect(shellTestState.uninstallNavIntent).toHaveBeenCalledTimes(1);
+});
+
+it('runs the idle next-page pass for the signed-in user', () => {
+  shellTestState.useIdleNext.mockClear();
+  renderAtRoute('/space/p1/intent/i1');
+  expect(shellTestState.useIdleNext).toHaveBeenCalledWith(true, true);
 });
 
 beforeEach(() => {

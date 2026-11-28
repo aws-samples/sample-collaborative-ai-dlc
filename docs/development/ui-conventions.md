@@ -10,7 +10,9 @@ Every status word, tone, icon, and help sentence comes from the registry in `lib
 
 - **No local status maps.** Do not map a backend value to a label or a color in a component, and do not print a backend value such as `FAILED` as text. The registry labels are the product vocabulary: `CREATED` reads "Starting", `SUCCEEDED` reads "Completed", `WAITING` reads "Waiting for input".
 - **Kinds.** The registry covers `intent`, `stage`, `gate`, `unit`, `connection`, `config`, and `sensor`. An unknown value degrades to a neutral, humanized label instead of failing.
+- **Derive, then render.** For an intent, compute `{ key, stalled, since }` with `deriveIntentStatus` or, in lists, `useIntentStatus`, and pass the result to the pill. Every surface then shows the same state and the same age.
 - **Compact variant.** In dense lists pass `compact`. The pill shows a short label ("Waiting · 108 d", "Stalled · 4 mo") and keeps the full label for assistive technology and as its title. A pill is never truncated: give it room and truncate the neighboring text.
+- **Stalled is a qualifier, not a status.** A run that is `RUNNING` or `CREATED` with no recorded activity for 30 minutes (`STALL_AFTER_MS`) is shown as "Stalled · no activity for …" in the warning tone, without animation. Use the word "Stalled" for this everywhere.
 - **Motion.** Only states marked `live` in the registry pulse, and only when the user has not asked for reduced motion.
 - **Sizes and help.** `size="sm"` (default) shows a dot, `size="md"` shows the registry icon. `hint` adds the registry help sentence as a tooltip that is reachable by keyboard.
 - **Status text outside a pill.** Use `statusLabel` for the words and `TONE_CLASSES` for the color.

@@ -19,6 +19,7 @@ export interface CompiledRequest {
 // way the service does (workflowsService.compiled, trackersService.listIssues),
 // so two different requests can never share an entry.
 export const qk = {
+  projects: () => ['projects'] as const,
   projectIntents: (projectId: string) => ['project', projectId, 'intents'] as const,
   intentDetail: (projectId: string, intentId: string) =>
     ['intent', projectId, intentId, 'detail'] as const,
