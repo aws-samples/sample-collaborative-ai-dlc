@@ -38,8 +38,10 @@ const start = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
 const writeText = vi.fn();
+const exportWorkflow = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
+    exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
     get: (...a: unknown[]) => get(...a),
     cancel: (...a: unknown[]) => cancel(...a),
     delete: (...a: unknown[]) => deleteIntent(...a),
@@ -54,6 +56,26 @@ vi.mock('@/services/workflows', () => ({
     compiled: (...a: unknown[]) => compiled(...a),
     get: (...a: unknown[]) => workflowGet(...a),
   },
+}));
+const mockReadOnly = vi.fn(() => false);
+vi.mock('@/contexts/SpacePermissionsContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/contexts/SpacePermissionsContext')>();
+  return {
+    ...actual,
+    useSpacePermissions: () => ({
+      readOnly: mockReadOnly(),
+      loading: false,
+      documentEpoch: 0,
+      canManage: undefined,
+      role: mockReadOnly() ? 'viewer' : null,
+      refresh: () => {},
+      denyWrites: () => {},
+    }),
+  };
+});
+const getResponsibilities = vi.fn();
+vi.mock('@/services/stageResponsibilities', () => ({
+  stageResponsibilitiesService: { get: (...a: unknown[]) => getResponsibilities(...a) },
 }));
 const sharedChannels = vi.fn();
 vi.mock('@/services/aidlcReleases', () => ({
@@ -181,6 +203,12 @@ beforeEach(() => {
   mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'owner' } });
   mockCachedSummary.mockReturnValue(undefined);
   sharedChannels.mockResolvedValue({ pinningEnabled: false });
+  // Stage roles not enforced: every member may decide (unattributedAccess).
+  getResponsibilities.mockResolvedValue({
+    stages: [],
+    unattributedAccess: { edit: true, decide: true },
+  });
+  mockReadOnly.mockReturnValue(false);
 });
 
 describe('IntentObservabilityPage — load recovery', () => {
@@ -997,6 +1025,65 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     );
   });
 
+  describe('for a member who cannot decide the stage', () => {
+    beforeEach(() => {
+      mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'member' } });
+      getResponsibilities.mockResolvedValue({
+        stages: [
+          {
+            stageId: 'reverse-engineering',
+            stageInstanceId: 'si-reverse-engineering',
+            access: { edit: false, decide: false },
+          },
+        ],
+      });
+    });
+
+    it('disables the restart the backend would refuse', async () => {
+      compiled.mockResolvedValue({
+        scopeGrid: {},
+        graph: {
+          nodes: [{ stageId: 'reverse-engineering', phasePath: '01', order: 0 }],
+          edges: [],
+        },
+      });
+      get.mockResolvedValue(
+        baseDetail(
+          {
+            status: 'FAILED',
+            currentStage: 'reverse-engineering',
+            failure: { code: 'not_implemented', message: 'not_implemented: mode pipeline' },
+          },
+          { stages: [stage('reverse-engineering', { state: 'FAILED' })] },
+        ),
+      );
+      renderPage();
+      await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+      expect(
+        await screen.findByRole('button', { name: 'Restart from Reverse Engineering' }),
+      ).toBeDisabled();
+    });
+
+    it('disables Resume when the answer to re-send is not theirs to give', async () => {
+      get.mockResolvedValue(
+        baseDetail(
+          { status: 'WAITING', resumeRequired: true },
+          {
+            gates: [
+              gate('gate-1', {
+                stageInstanceId: 'si-reverse-engineering',
+                status: 'answered',
+                resumeAvailable: true,
+              }),
+            ],
+          },
+        ),
+      );
+      renderPage();
+      expect(await screen.findByRole('button', { name: 'Resume run' })).toBeDisabled();
+    });
+  });
+
   it('offers Resume when a recorded answer still has to reach the run', async () => {
     resume.mockResolvedValue({});
     get.mockResolvedValue(baseDetail({ status: 'WAITING', resumeRequired: true }));
@@ -1166,6 +1253,26 @@ describe('IntentObservabilityPage — Actions', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   });
 
+  it('explains a refused workspace download like the Work page', async () => {
+    exportWorkflow.mockRejectedValue(
+      new ApiError(409, 'edited', {
+        code: 'export_edited_blocks',
+        incompatibleBlocks: ['STAGE:custom-review'],
+      }),
+    );
+    get.mockResolvedValue(baseDetail({ status: 'WAITING' }));
+    renderPage();
+    await userEvent.click(await screen.findByLabelText('Intent actions'));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Download workspace' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Download workspace' }));
+    expect(
+      await screen.findByText(
+        /methodology blocks customized in Collaborative AI-DLC: stage custom-review/,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('N19: the header carries Discuss next to the actions menu, like the Work header', async () => {
     get.mockResolvedValue(baseDetail());
     renderPage();
@@ -1325,5 +1432,175 @@ describe('IntentObservabilityPage — stalled hand-off', () => {
     const callout = document.querySelector('[data-outcome]') as HTMLElement;
     expect(callout).toHaveTextContent('Stalled while preparing the workspace — no activity for');
     expect(callout).not.toHaveTextContent(/never picked up|requested/);
+  });
+});
+
+describe('IntentObservabilityPage — viewer access (#777)', () => {
+  const failedBeforeAnyStage = () =>
+    baseDetail({ status: 'FAILED', failureReason: 'workspace init failed' });
+  const resumeOwed = () =>
+    baseDetail(
+      { status: 'WAITING', resumeRequired: true },
+      {
+        gates: [gate('gate-1', { stageInstanceId: 'si-intent-capture', status: 'answered' })].map(
+          (g) => ({ ...g, resumeAvailable: true }),
+        ),
+      },
+    );
+
+  it('a viewer gets the restart, resume, reshape, download and close disabled like on the Work page', async () => {
+    mockReadOnly.mockReturnValue(true);
+    mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'viewer' } });
+    get.mockResolvedValue(failedBeforeAnyStage());
+    renderPage();
+
+    await screen.findByText(/^Failed before the first stage/);
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeDisabled();
+    await userEvent.click(screen.getByLabelText('Intent actions'));
+    const download = screen.getByRole('menuitem', { name: /Download workspace/ });
+    expect(download).toHaveAttribute('aria-disabled', 'true');
+    expect(download).toHaveTextContent('You have view-only access to this space.');
+    const reshape = screen.getByRole('menuitem', { name: /Reshape remaining stages/ });
+    expect(reshape).toHaveAttribute('aria-disabled', 'true');
+    expect(reshape).toHaveTextContent('You have view-only access to this space.');
+    expect(screen.queryByRole('menuitem', { name: /Close failed run|Cancel run/ })).toBeNull();
+  });
+
+  it('a viewer cannot resume a run even when the stage roles let everyone decide', async () => {
+    mockReadOnly.mockReturnValue(true);
+    mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'viewer' } });
+    get.mockResolvedValue(resumeOwed());
+    renderPage();
+
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Resume run' })).toBeDisabled();
+  });
+
+  it('a member gets the same actions enabled', async () => {
+    mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'member' } });
+    get.mockResolvedValue(failedBeforeAnyStage());
+    renderPage();
+
+    await screen.findByText(/^Failed before the first stage/);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeEnabled(),
+    );
+    await userEvent.click(screen.getByLabelText('Intent actions'));
+    expect(screen.getByRole('menuitem', { name: /Download workspace/ })).not.toHaveAttribute(
+      'aria-disabled',
+    );
+    expect(screen.getByRole('menuitem', { name: /Reshape remaining stages/ })).not.toHaveAttribute(
+      'aria-disabled',
+    );
+    expect(screen.getByRole('menuitem', { name: 'Close failed run' })).toBeInTheDocument();
+  });
+
+  it('a member who may decide gets Resume enabled', async () => {
+    mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'member' } });
+    get.mockResolvedValue(resumeOwed());
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume run' })).toBeEnabled());
+  });
+});
+
+describe('IntentObservabilityPage — readers who cannot answer', () => {
+  describe('a question the reader cannot answer', () => {
+    const waiting = () =>
+      baseDetail(
+        { status: 'WAITING', pendingHumanTaskId: 'gate-1' },
+        {
+          stages: [stage('intent-capture', { state: 'WAITING_FOR_HUMAN' })],
+          gates: [gate('gate-1', { stageInstanceId: 'si-intent-capture', prompt: 'Which DB?' })],
+        },
+      );
+
+    it('reads neutrally with a View link for a member without the decision', async () => {
+      mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'member' } });
+      getResponsibilities.mockResolvedValue({
+        stages: [
+          {
+            stageId: 'intent-capture',
+            stageInstanceId: 'si-intent-capture',
+            access: { edit: true, decide: false },
+          },
+        ],
+      });
+      get.mockResolvedValue(waiting());
+      renderPage();
+
+      await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+      expect(await screen.findByText('1 question waiting for an answer')).toBeInTheDocument();
+      expect(screen.queryByText(/needs your answer/)).toBeNull();
+      expect(screen.queryByRole('link', { name: /^Answer/ })).toBeNull();
+      expect(screen.getByRole('link', { name: 'View: Which DB?' })).toHaveAttribute(
+        'href',
+        '/space/p1/intent/i1',
+      );
+    });
+
+    it('reads neutrally for a viewer', async () => {
+      mockReadOnly.mockReturnValue(true);
+      get.mockResolvedValue(waiting());
+      renderPage();
+
+      await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+      expect(await screen.findByText('1 question waiting for an answer')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /^Answer/ })).toBeNull();
+    });
+
+    it('still asks a member who may decide', async () => {
+      mockProjectCache.mockReturnValue({ project: { name: 'MySpace', userRole: 'member' } });
+      get.mockResolvedValue(waiting());
+      renderPage();
+
+      expect(await screen.findByText('1 question needs your answer')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Answer: Which DB?' })).toBeInTheDocument();
+    });
+  });
+});
+
+describe('IntentObservabilityPage — resume refusals', () => {
+  describe('Resume refusals, like the Work page', () => {
+    const owed = () =>
+      baseDetail(
+        { status: 'WAITING', resumeRequired: true },
+        { gates: [{ ...gate('gate-1', { status: 'answered' }), resumeAvailable: true }] },
+      );
+
+    it('409: re-reads the run, drops Resume and points at rewind', async () => {
+      get
+        .mockResolvedValueOnce(owed())
+        .mockResolvedValue(baseDetail({ status: 'FAILED', resumeRequired: null }));
+      resume.mockRejectedValue(
+        new ApiError(409, 'Durable execution expired before this answer could resume the run', {
+          code: 'durable_execution_expired',
+        }),
+      );
+      renderPage();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Resume run' }));
+      expect(await screen.findByText('This run can no longer be resumed')).toBeInTheDocument();
+      expect(screen.getByText(/rewind to the stage you want to re-run/i)).toBeInTheDocument();
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole('button', { name: 'Resume run' })).toBeNull();
+    });
+
+    it('503: keeps Resume and says to try again', async () => {
+      get.mockResolvedValue(owed());
+      resume.mockRejectedValue(
+        new ApiError(503, 'The durable callback could not be completed.', {
+          code: 'durable_callback_resume_failed',
+          retryable: true,
+        }),
+      );
+      renderPage();
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Resume run' }));
+      expect(await screen.findByText('Resume did not go through')).toBeInTheDocument();
+      expect(screen.getByText(/try Resume again in a moment/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Resume run' })).toBeEnabled();
+    });
   });
 });

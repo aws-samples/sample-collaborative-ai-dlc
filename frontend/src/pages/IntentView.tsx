@@ -16,7 +16,7 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { completionExplanation } from '@/lib/completionExplanation';
-import { ApiError } from '@/services/api';
+import { resumeOrExplain, type ResumeNotice } from '@/lib/intentActions';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -150,10 +150,7 @@ export default function IntentView() {
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [resuming, setResuming] = useState(false);
-  const [resumeNotice, setResumeNotice] = useState<{
-    kind: 'expired' | 'retryable';
-    message: string;
-  } | null>(null);
+  const [resumeNotice, setResumeNotice] = useState<ResumeNotice | null>(null);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [reshapeOpen, setReshapeOpen] = useState(false);
   const [confirmExport, setConfirmExport] = useState(false);
@@ -213,39 +210,19 @@ export default function IntentView() {
   // Cancel (steering): retire a parked (WAITING), stranded (CREATED) or FAILED
   // run — supersedes pending gates and flips the run to CANCELLED. RUNNING
   // cannot be cancelled mid-turn (the API 409s); the button hides for it.
-  // The resume endpoint has three outcomes, and collapsing them into one error
-  // toast offered the human a button that could never work. 409
-  // `durable_execution_expired` is TERMINAL: the durable execution is gone, the
-  // API already failed the run and cleared the marker, so the affordance must
-  // disappear and the human be told to rewind. 503 is retryable and the button
-  // must stay. Anything else is an ordinary error.
+  // Resume's expired (409) and retryable (503) outcomes: resumeOrExplain.
   const handleResume = async () => {
     setResuming(true);
     setActionError(null);
     setResumeNotice(null);
     try {
-      await resumeIntent();
+      const notice = await resumeOrExplain(resumeIntent, reload);
+      if (notice) {
+        setDismissedError(null);
+        setResumeNotice(notice);
+      }
     } catch (err) {
       setDismissedError(null);
-      if (err instanceof ApiError && err.status === 409) {
-        setResumeNotice({
-          kind: 'expired',
-          message:
-            'The durable execution expired before your answer could resume the run. The run is now failed — rewind to the stage you want to re-run; your answer is still on the record.',
-        });
-        // Re-read the intent: the API already wrote FAILED and cleared
-        // `resumeRequired`, which is what drops the resume affordance.
-        await reload();
-        return;
-      }
-      if (err instanceof ApiError && err.status === 503) {
-        setResumeNotice({
-          kind: 'retryable',
-          message:
-            'The durable callback could not be reached just now. Nothing was lost — try Resume again in a moment.',
-        });
-        return;
-      }
       setActionError(err instanceof Error ? err.message : 'Failed to resume intent');
     } finally {
       setResuming(false);
@@ -746,9 +723,7 @@ export default function IntentView() {
                 ) : (
                   <TriangleAlert className="h-4 w-4 text-agent-waiting" />
                 )}
-                {resumeNotice.kind === 'expired'
-                  ? 'This run can no longer be resumed'
-                  : 'Resume did not go through'}
+                {resumeNotice.title}
               </div>
               <p className="mt-1 text-[12px] text-muted-foreground">{resumeNotice.message}</p>
             </div>

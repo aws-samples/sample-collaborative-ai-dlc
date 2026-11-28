@@ -21,7 +21,13 @@ import { IntentStageList } from '@/components/intent/IntentStageList';
 import { StageDetail } from '@/components/intent/StageDetail';
 import { IntentOutcomeCallout } from '@/components/intent/IntentOutcomeCallout';
 import { IntentPageHeader } from '@/components/intent/IntentPageHeader';
-import { reshapeDisabledReason } from '@/lib/intentActions';
+import {
+  reshapeDisabledReason,
+  resumeOrExplain,
+  VIEW_ONLY_REASON,
+  type ResumeNotice,
+} from '@/lib/intentActions';
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { IntentActionsMenu } from '@/components/intent/IntentActionsMenu';
 import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
@@ -271,10 +277,13 @@ function IntentOverview() {
     phaseNameOf,
     selectedStageId,
     setSelectedStageId,
+    gateAccess,
+    mayControlStage,
   } = useIntent();
   const navigate = useNavigate();
   const [retryingLoad, setRetryingLoad] = useState(false);
   const { project } = useProjectCache(projectId);
+  const { readOnly } = useSpacePermissions();
   const [view, setView] = useState<ObsView>(readStoredView);
 
   const canDelete = project?.userRole === 'owner';
@@ -282,6 +291,7 @@ function IntentOverview() {
   const [reshapeOpen, setReshapeOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<'restart' | 'resume' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [resumeNotice, setResumeNotice] = useState<ResumeNotice | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
   const [promptExpansion, setPromptExpansion] = useState<{
     intentId: string;
@@ -371,6 +381,7 @@ function IntentOverview() {
   const runAction = async (kind: 'restart' | 'resume', action: () => Promise<void>) => {
     setPendingAction(kind);
     setActionError(null);
+    setResumeNotice(null);
     try {
       await action();
     } catch (err) {
@@ -613,7 +624,8 @@ function IntentOverview() {
   // look: the decision callout leads and the prompt follows, summarized.
   const derived = deriveIntentStatus(intent, { lastActivityAt, gates });
   const answerFirst = intent.status === 'WAITING' || intent.status === 'FAILED' || derived.stalled;
-  const canReshape = reshapeDisabledReason(intent) === undefined;
+  const reshapeBlockedReason = readOnly ? VIEW_ONLY_REASON : reshapeDisabledReason(intent);
+  const canReshape = reshapeBlockedReason === undefined;
   const promptCard = (
     <InitialPromptCard
       prompt={prompt}
@@ -624,12 +636,18 @@ function IntentOverview() {
     />
   );
 
+  // The same checks as the Work page's recovery and resume controls (viewer,
+  // stage permissions): disable what the backend would refuse.
+  const recoveryStageId = failedStage?.stageId ?? intent.currentStage;
+  const mayRecover = !recoveryStageId || mayControlStage(recoveryStageId);
+  const canResume =
+    canDelete || gates.some((gate) => gate.resumeAvailable && gateAccess(gate).access?.decide);
   const outcomeActions = {
     restartFromStage: failedStage
       ? {
           stageId: failedStage.stageId,
           pending: pendingAction === 'restart',
-          disabled: pendingAction !== null,
+          disabled: readOnly || pendingAction !== null || !mayRecover,
           onClick: () => void runAction('restart', () => rewindIntent(failedStage.stageId)),
         }
       : undefined,
@@ -637,7 +655,7 @@ function IntentOverview() {
       intent.status === 'FAILED' && !failedStage
         ? {
             pending: pendingAction === 'restart',
-            disabled: pendingAction !== null,
+            disabled: readOnly || pendingAction !== null || !mayRecover,
             onClick: () =>
               void runAction('restart', async () => {
                 await intentsService.start(projectId, intentId);
@@ -647,8 +665,11 @@ function IntentOverview() {
         : undefined,
     resume: {
       pending: pendingAction === 'resume',
-      disabled: pendingAction !== null,
-      onClick: () => void runAction('resume', resumeIntent),
+      disabled: readOnly || pendingAction !== null || !canResume,
+      onClick: () =>
+        void runAction('resume', async () =>
+          setResumeNotice(await resumeOrExplain(resumeIntent, reload)),
+        ),
     },
     checkDelivery: { onClick: () => navigate(workPath) },
   };
@@ -689,11 +710,11 @@ function IntentOverview() {
                 intent={intent}
                 onConfiguration={() => setConfigurationOpen(true)}
                 onReshape={() => setReshapeOpen(true)}
-                reshapeDisabledReason={reshapeDisabledReason(intent)}
+                reshapeDisabledReason={reshapeBlockedReason}
                 onExport={workspaceExport.open}
                 exportDisabledReason={workspaceExport.disabledReason}
                 onAudit={() => navigate(`${workPath}/audit`)}
-                onCancel={handleCancel}
+                onCancel={readOnly ? undefined : handleCancel}
                 onDelete={canDelete ? handleDelete : undefined}
                 extraItems={
                   // Same opt-in item as the Work header: opens the create page
@@ -711,6 +732,15 @@ function IntentOverview() {
         />
 
         {actionError && <Alert tone="danger" live title={actionError} />}
+        {resumeNotice && (
+          <Alert
+            tone={resumeNotice.kind === 'expired' ? 'danger' : 'warning'}
+            live
+            title={resumeNotice.title}
+          >
+            <AlertDescription>{resumeNotice.message}</AlertDescription>
+          </Alert>
+        )}
 
         {answerFirst ? null : promptCard}
 
@@ -723,6 +753,8 @@ function IntentOverview() {
             gate: (gate) =>
               gate.kind === 'validation' ? `${workPath}/review/${gate.humanTaskId}` : workPath,
           }}
+          // GateCard's rule: a viewer or a member without the decision cannot answer.
+          canAnswer={(gate) => !readOnly && gateAccess(gate).access?.decide === true}
           actions={outcomeActions}
         />
 
@@ -830,6 +862,7 @@ function IntentOverview() {
         />
         {canReshape && (
           <RecomposePanel
+            mayControlStage={mayControlStage}
             open={reshapeOpen}
             onOpenChange={setReshapeOpen}
             projectId={projectId}

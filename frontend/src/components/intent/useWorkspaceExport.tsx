@@ -18,7 +18,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
+import { nativeExportErrorMessage } from '@/components/intent/nativeExportError';
 import { useReturnFocus } from '@/components/intent/useReturnFocus';
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
+import { VIEW_ONLY_REASON } from '@/lib/intentActions';
 import {
   intentsService,
   type Intent,
@@ -64,11 +67,14 @@ export function useWorkspaceExport({
   const returnFocus = useReturnFocus(confirming);
   const activeHarness = harness ?? intent.agentCli ?? undefined;
 
-  const disabledReason = NON_EXPORTABLE_STATUSES.has(intent.status)
-    ? EXPORT_UNAVAILABLE_REASON
-    : exporting
-      ? 'Preparing workspace…'
-      : undefined;
+  const { readOnly } = useSpacePermissions();
+  const disabledReason = readOnly
+    ? VIEW_ONLY_REASON
+    : NON_EXPORTABLE_STATUSES.has(intent.status)
+      ? EXPORT_UNAVAILABLE_REASON
+      : exporting
+        ? 'Preparing workspace…'
+        : undefined;
 
   const run = async () => {
     setConfirming(false);
@@ -84,7 +90,7 @@ export function useWorkspaceExport({
       download.remove();
       if (exported.setup.showWorkspaceSetup || exported.warnings.length > 0) setResult(exported);
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to export workflow');
+      onError(nativeExportErrorMessage(err));
     } finally {
       setExporting(false);
     }
