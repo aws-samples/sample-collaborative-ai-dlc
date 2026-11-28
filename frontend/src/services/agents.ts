@@ -1,4 +1,8 @@
 import { api } from './api';
+import { queryClient, type FetchMode } from '../lib/queryClient';
+import { afterWrite, refreshAfterWrite } from '../lib/afterWrite';
+import { qk } from '../lib/queryKeys';
+import { personalCredentialsQuery, projectCredentialsQuery } from '../lib/settingsQueries';
 import type { StructuredQuestion, StructuredAnswer } from './questions';
 import type { AgentCli, CliModels, TierModels } from './projects';
 
@@ -339,6 +343,32 @@ export interface TaskAgentStatus {
   executionStatus: string | null;
 }
 
+// Settings are one platform record shared by every admin card: one request
+// serves all concurrent readers, and every write through PUT /agents/settings
+// invalidates it so the next reader gets the saved value.
+const SETTINGS_STALE_MS = 30_000;
+
+const invalidateSettings = () => refreshAfterWrite(qk.agentsSettings());
+
+// Space credential views embed the platform fallback and every view carries
+// the platform authentication mode, so platform writes reach all of them.
+function invalidateAllCredentials(): void {
+  void queryClient.invalidateQueries({ queryKey: qk.personalCredentials() });
+  void queryClient.invalidateQueries({
+    predicate: ({ queryKey }) => queryKey[0] === 'project' && queryKey[2] === 'agent-credentials',
+  });
+}
+
+// A failed PUT may still have been applied; rereading is always safe.
+const afterSettingsWrite = <T>(write: Promise<T>): Promise<T> =>
+  write.finally(() => {
+    invalidateSettings();
+    invalidateAllCredentials();
+  });
+
+const thenInvalidateSettings = <T>(write: Promise<T>): Promise<T> =>
+  afterWrite(write, qk.agentsSettings());
+
 export const agentsService = {
   // Agent CLI capabilities — which CLIs are installed in the current image.
   // Pass `withModels` to also fetch the per-CLI model lists + v2 runtime CLI
@@ -357,37 +387,55 @@ export const agentsService = {
     api.get<{ enforceStageRoles: boolean }>('/agents/settings?section=stageRoles'),
 
   async getSettings(): Promise<AgentSettings> {
-    return api.get('/agents/settings');
+    return queryClient.fetchQuery({
+      queryKey: qk.agentsSettings(),
+      staleTime: SETTINGS_STALE_MS,
+      gcTime: 5 * 60_000,
+      queryFn: ({ signal }) => api.get<AgentSettings>('/agents/settings', { signal }),
+    });
   },
 
   async updateSettings(update: AgentSettingsUpdate): Promise<{ saved: boolean }> {
-    return api.put('/agents/settings', update);
+    return afterSettingsWrite(api.put<{ saved: boolean }>('/agents/settings', update));
   },
 
   async updateSandbox(update: SandboxSettingsUpdate): Promise<SandboxSettings> {
-    const result = await api.put<{ sandbox: SandboxSettings }>('/agents/settings', {
-      sandbox: update,
-    });
+    // Reread instead of patching the cached record: it may be an invalidated
+    // pre-save copy whose other fields are already obsolete.
+    const result = await thenInvalidateSettings(
+      api.put<{ sandbox: SandboxSettings }>('/agents/settings', { sandbox: update }),
+    );
     return result.sandbox;
   },
 
-  async getPersonalCredentials(): Promise<AgentCredentialStatus> {
-    return api.get('/users/me/agent-credentials');
+  async getPersonalCredentials(mode?: FetchMode): Promise<AgentCredentialStatus> {
+    return queryClient.fetchQuery({ ...personalCredentialsQuery(), ...mode });
   },
 
   async updatePersonalCredentials(update: AgentCredentialUpdate): Promise<{ saved: boolean }> {
-    return api.put('/users/me/agent-credentials', update);
+    // A read started before this write could otherwise land after it and show
+    // the old key status (for example "Set" right after Clear).
+    return afterWrite(
+      api.put<{ saved: boolean }>('/users/me/agent-credentials', update),
+      qk.personalCredentials(),
+    );
   },
 
-  async getProjectCredentials(projectId: string): Promise<SpaceAgentCredentialStatus> {
-    return api.get(`/projects/${projectId}/agent-credentials`);
+  async getProjectCredentials(
+    projectId: string,
+    mode?: FetchMode,
+  ): Promise<SpaceAgentCredentialStatus> {
+    return queryClient.fetchQuery({ ...projectCredentialsQuery(projectId), ...mode });
   },
 
   async updateProjectCredentials(
     projectId: string,
     update: AgentCredentialUpdate,
   ): Promise<{ saved: boolean }> {
-    return api.put(`/projects/${projectId}/agent-credentials`, update);
+    return afterWrite(
+      api.put<{ saved: boolean }>(`/projects/${projectId}/agent-credentials`, update),
+      qk.projectCredentials(projectId),
+    );
   },
 
   async previewCredentialUpdate(
@@ -411,7 +459,11 @@ export const agentsService = {
     });
   },
   async applyAuthenticationChange(reviewId: string): Promise<{ saved: boolean }> {
-    return api.put('/agents/settings', { authenticationChange: { action: 'apply', reviewId } });
+    return afterSettingsWrite(
+      api.put<{ saved: boolean }>('/agents/settings', {
+        authenticationChange: { action: 'apply', reviewId },
+      }),
+    );
   },
   // Provider-owned setup steps (defaults, generated policies, verification).
   // Platform admins only; `mode` and `action` select the registered handler.

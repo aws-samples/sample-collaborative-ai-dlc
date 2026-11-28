@@ -4,6 +4,7 @@ import type { Project } from '@/services/projects';
 import { UNPRICED_MODEL_NOTE } from '@/components/settings/UnpricedModelNote';
 
 const getProjectCapabilities = vi.fn();
+const credentialCard = vi.fn();
 
 vi.mock('@/services/agents', () => ({
   agentsService: {
@@ -19,7 +20,10 @@ vi.mock('@/services/projects', () => ({
   },
 }));
 vi.mock('@/components/settings/AgentCredentialScopeCard', () => ({
-  AgentCredentialScopeCard: () => null,
+  AgentCredentialScopeCard: (props: unknown) => {
+    credentialCard(props);
+    return null;
+  },
 }));
 vi.mock('@/components/settings/CustomMcpServersSection', () => ({
   CustomMcpServersSection: () => null,
@@ -186,5 +190,22 @@ describe('AgentTab output language (#784)', () => {
     );
     expect(await screen.findByText('Korean (한국어)')).toBeInTheDocument();
     expect(screen.queryByLabelText('BCP 47 language tag')).toBeNull();
+  });
+});
+
+describe('AgentTab credentials', () => {
+  it.each([
+    ['codex', 'bedrock'],
+    ['kiro', 'kiro'],
+  ] as const)('asks the credential card for the key the %s CLI needs', (agentCli, provider) => {
+    render(<AgentTab project={{ ...project({}), agentCli }} canEdit onProjectUpdated={vi.fn()} />);
+    expect(credentialCard).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        scope: 'space',
+        projectId: 'p-1',
+        presentation: 'disclosure',
+        requiredProviders: [provider],
+      }),
+    );
   });
 });

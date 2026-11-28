@@ -20,6 +20,7 @@ export interface CompiledRequest {
 // so two different requests can never share an entry.
 export const qk = {
   projects: () => ['projects'] as const,
+  agentsSettings: () => ['agents', 'settings'] as const,
   projectIntents: (projectId: string) => ['project', projectId, 'intents'] as const,
   intentDetail: (projectId: string, intentId: string) =>
     ['intent', projectId, intentId, 'detail'] as const,
@@ -46,4 +47,9 @@ export const qk = {
   workflowDetail: (workflowId: string, version?: number | null) =>
     ['workflow', workflowId, 'detail', version ? version : null] as const,
   // --- end authoring ---
+  // --- settings (admin, space and account settings; factories in lib/settingsQueries.ts) ---
+  // Space-scoped views stay under ['project', id] so deleting a space reaches them.
+  projectCredentials: (projectId: string) => ['project', projectId, 'agent-credentials'] as const,
+  personalCredentials: () => ['me', 'agent-credentials'] as const,
+  // --- end settings ---
 } satisfies Record<string, (...args: never[]) => QueryKey>;

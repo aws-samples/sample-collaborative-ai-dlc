@@ -1,10 +1,13 @@
 // Write-only secret input with a "Set / Not set" status chip and an optional
 // Clear action. The backend never returns secret values to the browser, so the
 // field is always empty; typing a value rotates the secret, Clear removes it.
+// A typed value is unsaved work: it is reported to the nearest
+// UnsavedChangesGuard so a tab switch asks before discarding it.
 
 import type { ReactNode } from 'react';
 import { Input } from '@/components/ui/input';
 import { AlertCircle, Loader2, XCircle } from 'lucide-react';
+import { useUnsavedChangesGuard } from '@/components/UnsavedChangesGuard';
 import { ConfigStatusBadge } from './ConfigStatusBadge';
 
 interface Props {
@@ -25,7 +28,11 @@ interface Props {
   onClear?: () => void;
   clearing?: boolean;
   disabled?: boolean;
+  /** Focus the input on mount, for a field that opens in place of the button that asked for it. */
+  autoFocus?: boolean;
 }
+
+const GUARDED_PARAMS = ['tab'] as const;
 
 export function SecretField({
   id,
@@ -41,7 +48,9 @@ export function SecretField({
   onClear,
   clearing = false,
   disabled = false,
+  autoFocus = false,
 }: Props) {
+  useUnsavedChangesGuard(value.length > 0, { guardSearchParams: GUARDED_PARAMS });
   const warningId = `${id}-warning`;
   return (
     <div className="space-y-1.5">
@@ -55,12 +64,12 @@ export function SecretField({
             type="button"
             onClick={onClear}
             disabled={disabled || clearing}
-            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50"
+            className="inline-flex min-h-6 items-center gap-1 text-2xs text-muted-foreground hover:text-destructive disabled:opacity-50"
           >
             {clearing ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
             ) : (
-              <XCircle className="h-3 w-3" />
+              <XCircle className="h-3 w-3" aria-hidden="true" />
             )}
             Clear
           </button>
@@ -75,14 +84,15 @@ export function SecretField({
         className="font-mono text-sm h-9"
         autoComplete="off"
         disabled={disabled}
+        autoFocus={autoFocus}
         aria-describedby={warningText ? warningId : undefined}
       />
-      {helpText && <p className="text-[11px] text-muted-foreground">{helpText}</p>}
+      {helpText && <p className="text-2xs text-muted-foreground">{helpText}</p>}
       {warningText && (
         <p
           id={warningId}
           role="status"
-          className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400"
+          className="flex items-start gap-1.5 text-2xs text-warning-fg"
         >
           <AlertCircle className="mt-px h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{warningText}</span>

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@/test/query';
 import { ApiError } from '@/services/api';
 import userEvent from '@testing-library/user-event';
 import type { AgentAuthenticationView } from '@/services/agents';
 import type { AgentAuthProviderUi, AgentAuthSetupProps } from './agent-auth/contract';
 
+const getSettings = vi.fn();
 const getPersonalCredentials = vi.fn();
 const updatePersonalCredentials = vi.fn();
 const getProjectCredentials = vi.fn();
@@ -12,6 +13,7 @@ const updateProjectCredentials = vi.fn();
 
 vi.mock('@/services/agents', () => ({
   agentsService: {
+    getSettings: (...args: unknown[]) => getSettings(...args),
     getPersonalCredentials: (...args: unknown[]) => getPersonalCredentials(...args),
     updatePersonalCredentials: (...args: unknown[]) => updatePersonalCredentials(...args),
     getProjectCredentials: (...args: unknown[]) => getProjectCredentials(...args),
@@ -36,6 +38,21 @@ vi.mock('./agent-auth/registry', () => {
 });
 
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
+import { queryClient } from '@/lib/queryClient';
+import { qk } from '@/lib/queryKeys';
+
+// Stored and missing keys are summary rows; the input appears after Add/Rotate.
+const BEDROCK = /^(Add|Rotate) Bedrock key$/;
+const KIRO = /^(Add|Rotate) Kiro key$/;
+const GATEWAY = /^(Add|Rotate) gateway key$/;
+const openField = async (
+  user: ReturnType<typeof userEvent.setup>,
+  action: RegExp,
+  label: RegExp,
+) => {
+  await user.click(await screen.findByRole('button', { name: action }));
+  return screen.getByLabelText(label);
+};
 
 const SPACE_A_STATUS = {
   bedrockBearerTokenSet: true,
@@ -86,10 +103,12 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);
 
-    const token = await screen.findByLabelText(/Bedrock Bearer Token/);
+    expect(await screen.findByRole('button', { name: 'Add Bedrock key' })).toBeVisible();
+    expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+    const token = await openField(user, BEDROCK, /Bedrock Bearer Token/);
     expect(token).toHaveValue('');
     await user.type(token, 'personal-token');
-    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
 
     await waitFor(() =>
       expect(updatePersonalCredentials).toHaveBeenCalledWith({
@@ -106,8 +125,8 @@ describe('AgentCredentialScopeCard', () => {
     expect(await screen.findByText(/A platform fallback is available/)).toBeInTheDocument();
     expect(screen.getByText(/No platform fallback is set/)).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText(/Kiro API Key/), 'space-key');
-    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await user.type(await openField(user, KIRO, /Kiro API Key/), 'space-key');
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
 
     await waitFor(() =>
       expect(updateProjectCredentials).toHaveBeenCalledWith('space-1', {
@@ -123,15 +142,17 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     const { rerender } = render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
 
-    const spaceAKey = await screen.findByLabelText(/Kiro API Key/);
+    const spaceAKey = await openField(user, /^Add Kiro key$/, /Kiro API Key/);
     await user.type(spaceAKey, 'space-a-key');
     expect(spaceAKey).toHaveValue('space-a-key');
 
     rerender(<AgentCredentialScopeCard scope="space" projectId="space-b" />);
 
-    const spaceBKey = await screen.findByLabelText(/Kiro API Key/);
+    expect(await screen.findByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
+    expect(screen.queryByLabelText(/Kiro API Key/)).not.toBeInTheDocument();
+    const spaceBKey = await openField(user, /^Rotate Kiro key$/, /Kiro API Key/);
     expect(spaceBKey).toHaveValue('');
-    expect(screen.getByRole('button', { name: 'Save Credentials' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save credentials' })).toBeDisabled();
   });
 
   it('ignores a delayed response from the previous space', async () => {
@@ -144,18 +165,16 @@ describe('AgentCredentialScopeCard', () => {
 
     rerender(<AgentCredentialScopeCard scope="space" projectId="space-b" />);
 
-    const bedrock = await screen.findByLabelText(/Bedrock Bearer Token/);
-    const kiro = screen.getByLabelText(/Kiro API Key/);
-    expect(bedrock).toHaveAttribute('placeholder', 'Enter AWS_BEARER_TOKEN_BEDROCK value');
-    expect(kiro).toHaveAttribute('placeholder', 'Enter a new key to rotate, or leave blank');
+    expect(await screen.findByRole('button', { name: 'Add Bedrock key' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
 
     await act(async () => {
       lateSpaceA.resolve(SPACE_A_STATUS);
       await lateSpaceA.promise;
     });
 
-    expect(bedrock).toHaveAttribute('placeholder', 'Enter AWS_BEARER_TOKEN_BEDROCK value');
-    expect(kiro).toHaveAttribute('placeholder', 'Enter a new key to rotate, or leave blank');
+    expect(screen.getByRole('button', { name: 'Add Bedrock key' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
   });
 
   it('drops an in-flight save when the space changes', async () => {
@@ -169,14 +188,14 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     const { rerender } = render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
 
-    await user.type(await screen.findByLabelText(/Kiro API Key/), 'space-a-key');
-    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await user.type(await openField(user, KIRO, /Kiro API Key/), 'space-a-key');
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
 
     rerender(<AgentCredentialScopeCard scope="space" projectId="space-b" />);
 
-    await screen.findByLabelText(/Kiro API Key/);
-    expect(screen.getByRole('button', { name: 'Save Credentials' })).toBeDisabled();
+    await screen.findByRole('button', { name: 'Rotate Kiro key' });
+    expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
 
     await act(async () => {
       pendingSpaceAUpdate.resolve({ saved: true });
@@ -193,12 +212,12 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);
 
-    const kiro = await screen.findByLabelText(/Kiro API Key/);
+    const kiro = await openField(user, KIRO, /Kiro API Key/);
     await user.type(kiro, 'bedrock-api-key-example');
     expect(screen.getByRole('status')).toHaveTextContent(/starts with "ksk_"/);
     expect(kiro).toHaveAccessibleDescription(/starts with "ksk_"/);
 
-    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
     await waitFor(() =>
       expect(updatePersonalCredentials).toHaveBeenCalledWith({
         kiroApiKey: 'bedrock-api-key-example',
@@ -210,7 +229,7 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);
 
-    const kiro = await screen.findByLabelText(/Kiro API Key/);
+    const kiro = await openField(user, KIRO, /Kiro API Key/);
     await user.type(kiro, 'ksk_example');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(kiro).not.toHaveAttribute('aria-describedby');
@@ -220,7 +239,7 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
 
-    await user.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'ksk_example');
+    await user.type(await openField(user, BEDROCK, /Bedrock Bearer Token/), 'ksk_example');
     expect(screen.getByRole('status')).toHaveTextContent(/It goes in Kiro API Key/);
   });
 
@@ -235,8 +254,8 @@ describe('AgentCredentialScopeCard', () => {
       });
       render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
 
-      const key = await screen.findByLabelText(/Bedrock Gateway Key/);
-      expect(key).toHaveAttribute('placeholder', 'Enter the gateway key');
+      const key = await openField(user, GATEWAY, /Bedrock Gateway Key/);
+      expect(key).toHaveAttribute('placeholder', 'Paste your gateway key');
       expect(
         screen.getByText(
           'Sent to the Bedrock gateway at gateway.example.com. Enables Claude Code; OpenCode and Codex cannot use a gateway. A platform fallback is available.',
@@ -247,7 +266,7 @@ describe('AgentCredentialScopeCard', () => {
 
       // The same write as a Bedrock key: the gateway changes where it is sent, not how it is stored.
       await user.type(key, 'gateway-test-key');
-      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
       await waitFor(() =>
         expect(updateProjectCredentials).toHaveBeenCalledWith('space-a', {
           bedrockBearerToken: 'gateway-test-key',
@@ -264,18 +283,19 @@ describe('AgentCredentialScopeCard', () => {
       });
       render(<AgentCredentialScopeCard scope="space" projectId="space-a" />);
 
-      await user.type(await screen.findByLabelText(/Bedrock Gateway Key/), 'ksk_example');
+      await user.type(await openField(user, GATEWAY, /Bedrock Gateway Key/), 'ksk_example');
       expect(screen.getByRole('status')).toHaveTextContent(
         /this field takes a Bedrock gateway key/,
       );
     });
 
     it('keeps the Bedrock wording when the backend reports no gateway', async () => {
+      const user = userEvent.setup();
       render(<AgentCredentialScopeCard scope="personal" />);
 
-      expect(await screen.findByLabelText(/Bedrock Bearer Token/)).toHaveAttribute(
+      expect(await openField(user, BEDROCK, /Bedrock Bearer Token/)).toHaveAttribute(
         'placeholder',
-        'Enter AWS_BEARER_TOKEN_BEDROCK value',
+        'Paste your Bedrock bearer token',
       );
       expect(screen.getByText('Enables Claude Code, OpenCode and Codex.')).toBeVisible();
       expect(screen.queryByText(/Bedrock gateway/)).not.toBeInTheDocument();
@@ -297,6 +317,82 @@ describe('AgentCredentialScopeCard', () => {
 
     expect(await screen.findByText('Using your own Bedrock key')).toBeInTheDocument();
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed refresh of shown credentials with Retry, not as Saved', async () => {
+    queryClient.setQueryData(qk.personalCredentials(), {
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+    });
+    getPersonalCredentials
+      .mockRejectedValueOnce(new Error('Credential service unavailable'))
+      .mockResolvedValueOnce({ bedrockBearerTokenSet: true, kiroApiKeySet: false });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't refresh credentials");
+    expect(alert).toHaveTextContent('Credential service unavailable');
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+    // The shown record stays.
+    expect(screen.getByText('Using your own Bedrock key')).toBeInTheDocument();
+
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  });
+
+  it('says Saved after a successful save, and a failed reread after it is a refresh problem', async () => {
+    getPersonalCredentials
+      .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: false })
+      .mockRejectedValueOnce(new Error('Credential service unavailable'));
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    await user.type(await openField(user, KIRO, /Kiro API Key/), 'kiro-key');
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
+
+    expect(await screen.findByText('Saved')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't refresh credentials");
+    expect(screen.queryByText(/Failed to save/)).not.toBeInTheDocument();
+  });
+
+  describe('keyboard focus', () => {
+    it('moves into the input a row opens and back to that row on Cancel', async () => {
+      getPersonalCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: true,
+        kiroApiKeySet: false,
+      });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      (await screen.findByRole('button', { name: 'Rotate Bedrock key' })).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.getByLabelText(/Bedrock Bearer Token/)).toHaveFocus();
+
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.getByRole('button', { name: 'Rotate Bedrock key' })).toHaveFocus();
+    });
+
+    it('returns to the saved row once the save succeeds', async () => {
+      getPersonalCredentials
+        .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: false })
+        .mockResolvedValueOnce({ bedrockBearerTokenSet: false, kiroApiKeySet: true });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      (await screen.findByRole('button', { name: 'Add Kiro key' })).focus();
+      await user.keyboard('{Enter}');
+      const input = screen.getByLabelText(/Kiro API Key/);
+      expect(input).toHaveFocus();
+      await user.type(input, 'kiro-key');
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toHaveFocus(),
+      );
+    });
   });
 
   describe('in a connection mode', () => {
@@ -350,13 +446,13 @@ describe('AgentCredentialScopeCard', () => {
           'A Bedrock key is still saved here, but it is not used while Test gateway is active.',
         ),
       ).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Clear/ })).not.toBeInTheDocument();
       expect(screen.queryByText(/Enables Claude Code/)).not.toBeInTheDocument();
 
-      const kiro = screen.getByLabelText(/Kiro API Key/);
+      const kiro = await openField(user, KIRO, /Kiro API Key/);
       expect(kiro).toBeEnabled();
       await user.type(kiro, 'ksk_space');
-      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
       await waitFor(() =>
         expect(updateProjectCredentials).toHaveBeenCalledWith('space-1', {
           kiroApiKey: 'ksk_space',
@@ -392,8 +488,8 @@ describe('AgentCredentialScopeCard', () => {
       ).toBeInTheDocument();
       expect(screen.queryByText(/still saved here/)).not.toBeInTheDocument();
 
-      await user.type(screen.getByLabelText(/Kiro API Key/), 'ksk_personal');
-      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await user.type(await openField(user, KIRO, /Kiro API Key/), 'ksk_personal');
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
       await waitFor(() =>
         expect(updatePersonalCredentials).toHaveBeenCalledWith({ kiroApiKey: 'ksk_personal' }),
       );
@@ -414,7 +510,7 @@ describe('AgentCredentialScopeCard', () => {
           'A Bedrock key is still saved here, but it is not used while Test gateway is active.',
         ),
       ).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Clear/ })).not.toBeInTheDocument();
       expect(
         screen.getByText('Status: Needs reconnecting by an administrator'),
       ).toBeInTheDocument();
@@ -481,8 +577,8 @@ describe('AgentCredentialScopeCard', () => {
     );
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);
-    await user.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'personal-token');
-    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await user.type(await openField(user, BEDROCK, /Bedrock Bearer Token/), 'personal-token');
+    await user.click(screen.getByRole('button', { name: 'Save credentials' }));
 
     expect(
       await screen.findByText(
@@ -506,7 +602,171 @@ describe('AgentCredentialScopeCard', () => {
     render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
 
     expect(await screen.findByText(/Space key override/)).toBeInTheDocument();
-    expect(screen.getByText('1 provider configured')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeEnabled();
+    expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rotate Bedrock key' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Clear Bedrock key' })).toBeEnabled();
+  });
+
+  describe('space status (CF4)', () => {
+    it('says the space uses the platform keys when nothing is overridden, in a neutral tone', async () => {
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      const status = await screen.findByText('Uses platform keys');
+      expect(status).toHaveAttribute('data-tone', 'neutral');
+      expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
+    });
+
+    it('does not claim platform keys when the platform has none', async () => {
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      });
+      const { rerender } = render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+      expect(await screen.findByText('No keys set')).toBeInTheDocument();
+      expect(screen.queryByText('Uses platform keys')).not.toBeInTheDocument();
+
+      rerender(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock']}
+        />,
+      );
+      expect(await screen.findByText('Bedrock key missing')).toHaveAttribute(
+        'data-tone',
+        'warning',
+      );
+    });
+
+    it("names the missing key even when the space has a key the agents don't use", async () => {
+      getProjectCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: true,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      });
+      render(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock']}
+        />,
+      );
+      expect(await screen.findByText('Bedrock key missing')).toBeInTheDocument();
+      expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
+    });
+
+    it('warns only when an enabled CLI has no key at any level', async () => {
+      const { rerender } = render(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock']}
+        />,
+      );
+      expect(await screen.findByText('Uses platform keys')).toHaveAttribute('data-tone', 'neutral');
+
+      rerender(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          requiredProviders={['bedrock', 'kiro']}
+        />,
+      );
+      expect(await screen.findByText('Kiro key missing')).toHaveAttribute('data-tone', 'warning');
+    });
+
+    it('shows no provider count for a space with its own key: the row says Set', async () => {
+      getProjectCredentials.mockResolvedValue(SPACE_B_STATUS);
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      expect(await screen.findByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
+      expect(screen.getByText('Set')).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Uses platform keys')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('platform status', () => {
+    it('shows no provider count when a platform key is set', async () => {
+      getSettings.mockResolvedValue({ bedrockBearerTokenSet: true, kiroApiKeySet: true });
+      render(<AgentCredentialScopeCard scope="platform" />);
+
+      expect(await screen.findByRole('button', { name: 'Rotate Bedrock key' })).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+      expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
+    });
+
+    it('still warns when the platform has no key at all', async () => {
+      getSettings.mockResolvedValue({ bedrockBearerTokenSet: false, kiroApiKeySet: false });
+      render(<AgentCredentialScopeCard scope="platform" />);
+
+      expect(await screen.findByText('No credentials')).toHaveAttribute('data-tone', 'warning');
+    });
+  });
+
+  describe('as a disclosure (Space › Agent)', () => {
+    it('stays collapsed while the space inherits the platform keys', async () => {
+      render(
+        <AgentCredentialScopeCard scope="space" projectId="space-1" presentation="disclosure" />,
+      );
+
+      expect(await screen.findAllByText('Uses platform keys')).not.toHaveLength(0);
+      const trigger = screen.getByRole('button', { name: 'Agent credentials' });
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: 'Add Kiro key', hidden: true })).not.toBeVisible();
+    });
+
+    it('opens when the space has its own key', async () => {
+      getProjectCredentials.mockResolvedValue(SPACE_B_STATUS);
+      render(
+        <AgentCredentialScopeCard scope="space" projectId="space-1" presentation="disclosure" />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Agent credentials' })).toHaveAttribute(
+          'aria-expanded',
+          'true',
+        ),
+      );
+      expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+    });
+
+    it('opens when an enabled CLI has no key anywhere', async () => {
+      render(
+        <AgentCredentialScopeCard
+          scope="space"
+          projectId="space-1"
+          presentation="disclosure"
+          requiredProviders={['kiro']}
+        />,
+      );
+
+      expect(await screen.findAllByText('Kiro key missing')).not.toHaveLength(0);
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Agent credentials' })).toHaveAttribute(
+          'aria-expanded',
+          'true',
+        ),
+      );
+    });
+
+    it('can be opened by the person to add a key', async () => {
+      const user = userEvent.setup();
+      render(
+        <AgentCredentialScopeCard scope="space" projectId="space-1" presentation="disclosure" />,
+      );
+
+      await screen.findAllByText('Uses platform keys');
+      await user.click(screen.getByRole('button', { name: 'Agent credentials' }));
+      await user.type(await openField(user, KIRO, /Kiro API Key/), 'space-key');
+      await user.click(screen.getByRole('button', { name: 'Save credentials' }));
+      await waitFor(() =>
+        expect(updateProjectCredentials).toHaveBeenCalledWith('space-1', {
+          kiroApiKey: 'space-key',
+        }),
+      );
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import type {
   AgentAuthenticationView,
@@ -90,9 +90,18 @@ const verifyAndSubmit = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(screen.getByRole('button', { name: 'Review connection change' }));
 };
 const impactReview = () => screen.findByRole('region', { name: 'Confirm this change' });
+const pickMode = async (user: ReturnType<typeof userEvent.setup>, label: string) => {
+  await user.click(screen.getByRole('combobox', { name: 'Agent authentication mode' }));
+  await user.click(screen.getByRole('option', { name: label }));
+};
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Radix Select uses browser APIs that jsdom does not implement.
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  window.HTMLElement.prototype.setPointerCapture = vi.fn();
+  window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
   preview.mockImplementation(
     async (request: { kind?: string; projectId?: string; configuration?: object }) =>
       reviewOf(
@@ -194,7 +203,7 @@ describe('reviewed IAM controls', () => {
         onApplied={async () => {}}
       />,
     );
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'iam');
+    await pickMode(user, 'IAM');
     await user.click(screen.getByRole('button', { name: 'Set up IAM connection' }));
     expect(screen.getByRole('dialog', { name: 'Set up Bedrock IAM' })).toBeInTheDocument();
     await waitFor(() =>
@@ -274,7 +283,7 @@ describe('reviewed IAM controls', () => {
         onApplied={async () => {}}
       />,
     );
-    await user.selectOptions(screen.getByLabelText('Agent authentication mode'), 'keys');
+    await pickMode(user, 'Keys');
     await user.click(screen.getByRole('button', { name: 'Review mode change' }));
     expect(preview).toHaveBeenLastCalledWith({
       mode: 'keys',
@@ -367,7 +376,7 @@ describe('IAM credential scope card', () => {
     expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
     expect(access).toHaveTextContent('Region: eu-west-1');
     expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/Kiro API Key/)).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Add Kiro key' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: /IAM/ })).not.toBeInTheDocument();
   });
 
@@ -428,7 +437,7 @@ describe('IAM credential scope card', () => {
       authentication: platformView,
     });
     render(<AgentCredentialScopeCard scope="platform" />);
-    expect(await screen.findByLabelText('Agent authentication mode')).toHaveValue('iam');
+    expect(await screen.findByLabelText('Agent authentication mode')).toHaveTextContent('IAM');
     expect(screen.getByRole('button', { name: 'Change IAM connection' })).toBeEnabled();
     expect(screen.getByText(`Role: ${platformRole.roleArn}`)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();

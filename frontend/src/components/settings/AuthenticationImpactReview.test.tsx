@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettings';
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
+
+// A Bedrock key is a summary row until Add/Rotate reveals its input.
+const openBedrockField = async () => {
+  await userEvent.click(await screen.findByRole('button', { name: /^(Add|Rotate) Bedrock key$/ }));
+  return screen.getByLabelText(/Bedrock Bearer Token/);
+};
 import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { genericSummary } from './agent-auth/summary';
 import { reviewHasNoImpact } from './agent-auth/impact';
@@ -84,6 +90,11 @@ const review: AgentAuthImpactReview = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  // Radix Select uses browser APIs that jsdom does not implement.
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  window.HTMLElement.prototype.setPointerCapture = vi.fn();
+  window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
   vi.mocked(agentsService.getSettings).mockResolvedValue({
     bedrockBearerTokenSet: true,
     kiroApiKeySet: false,
@@ -94,7 +105,8 @@ beforeEach(() => {
 });
 
 describe('authentication settings and impact review', () => {
-  it('shows one enforced mode and disables providers that have not shipped', () => {
+  it('shows one enforced mode and disables providers that have not shipped', async () => {
+    const user = userEvent.setup();
     render(
       <AgentAuthenticationModeSettings
         authentication={authentication}
@@ -103,9 +115,13 @@ describe('authentication settings and impact review', () => {
         onApplied={vi.fn()}
       />,
     );
-    expect(screen.getByLabelText('Agent authentication mode')).toHaveValue('keys');
-    expect(screen.getByRole('option', { name: /IAM/ })).toBeDisabled();
-    expect(screen.getByRole('option', { name: /LiteLLM/ })).toBeDisabled();
+    expect(screen.getByLabelText('Agent authentication mode')).toHaveTextContent('Keys');
+    await user.click(screen.getByRole('combobox', { name: 'Agent authentication mode' }));
+    expect(screen.getByRole('option', { name: /IAM/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: /LiteLLM/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     expect(agentsService.applyAuthenticationChange).not.toHaveBeenCalled();
   });
   it('shows space inheritance and reconnect status without exposing secrets', () => {
@@ -186,6 +202,16 @@ describe('plain impact confirmation', () => {
     expect(screen.queryByText(/Older runtime sessions/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirm change' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Confirm this change' })).toHaveFocus();
+  });
+
+  it('uses a design-system disclosure, not a native details element, for Show details', async () => {
+    renderReview(reviewWith(item('loses-access')));
+    expect(document.querySelector('details')).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'Show details' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByText('Payments · Intent run (waiting)')).toBeVisible();
   });
 
   it('keeps the server notes of a resumed review behind Show details', async () => {
@@ -398,8 +424,8 @@ describe('typed inventory and outcomes the UI does not know', () => {
       id: 'review-head',
     });
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     await waitFor(() =>
       expect(agentsService.updateSettings).toHaveBeenCalledWith({
         bedrockBearerToken: 'replacement-key',
@@ -414,8 +440,8 @@ describe('typed inventory and outcomes the UI does not know', () => {
       reviewWith(environment('unknown')),
     );
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     expect(await screen.findByRole('region', { name: SETUP })).toBeInTheDocument();
     expect(agentsService.updateSettings).not.toHaveBeenCalled();
   });
@@ -424,13 +450,13 @@ describe('typed inventory and outcomes the UI does not know', () => {
 describe('saving keys through a review', () => {
   it('asks to confirm a key replacement that affects started work, then writes it', async () => {
     render(<AgentCredentialScopeCard scope="platform" />);
-    const field = await screen.findByLabelText(/Bedrock Bearer Token/);
+    const field = await openBedrockField();
     await userEvent.type(field, 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     expect(
       await screen.findByRole('region', { name: 'Some work that already started may be affected' }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Save Credentials' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save credentials' })).not.toBeInTheDocument();
     expect(agentsService.updateSettings).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Confirm anyway' }));
     await waitFor(() =>
@@ -446,10 +472,10 @@ describe('saving keys through a review', () => {
 
   it('cancels a confirmation without writing anything', async () => {
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('button', { name: 'Save Credentials' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save credentials' })).toBeEnabled();
     expect(agentsService.updateSettings).not.toHaveBeenCalled();
   });
 
@@ -468,8 +494,8 @@ describe('saving keys through a review', () => {
     expect(await screen.findByText('Not set: shared keys are used')).toBeInTheDocument();
     expect(screen.queryByText(/Platform mode|Kiro uses|Connection:/)).not.toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText(/Bedrock Bearer Token/), 'personal-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'personal-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
 
     await waitFor(() =>
       expect(agentsService.updatePersonalCredentials).toHaveBeenCalledWith({
@@ -497,7 +523,7 @@ describe('saving keys through a review', () => {
     );
     render(<AgentCredentialScopeCard scope="personal" />);
     expect(await screen.findByText('Using your own Bedrock key')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Clear Bedrock key' }));
 
     expect(
       await screen.findByText(/We could not check whether 1 agent task will be affected/),
@@ -517,8 +543,8 @@ describe('saving keys through a review', () => {
       }),
     );
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     expect(
       await screen.findByText(
         'Something changed while saving, so nothing was saved. Please try again.',
@@ -536,8 +562,8 @@ describe('saving keys through a review', () => {
       }),
     );
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Confirm anyway' }));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Confirm anyway' })).not.toBeInTheDocument(),
@@ -545,15 +571,15 @@ describe('saving keys through a review', () => {
     expect(
       screen.getByText('Something changed while saving, so nothing was saved. Please try again.'),
     ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     expect(await screen.findByRole('button', { name: 'Confirm anyway' })).toBeInTheDocument();
   });
 
   it('keeps a failed confirmation open and shows why', async () => {
     vi.mocked(agentsService.updateSettings).mockRejectedValueOnce(new Error('Network down'));
     render(<AgentCredentialScopeCard scope="platform" />);
-    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
-    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await userEvent.type(await openBedrockField(), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save credentials' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Confirm anyway' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Network down');
     expect(screen.getByRole('button', { name: 'Confirm anyway' })).toBeEnabled();

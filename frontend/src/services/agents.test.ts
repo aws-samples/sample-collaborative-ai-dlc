@@ -1,12 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const get = vi.fn();
 const post = vi.fn();
 const put = vi.fn();
 vi.mock('./api', () => ({
-  api: { post: (...a: unknown[]) => post(...a), put: (...a: unknown[]) => put(...a) },
+  api: {
+    get: (...a: unknown[]) => get(...a),
+    post: (...a: unknown[]) => post(...a),
+    put: (...a: unknown[]) => put(...a),
+  },
 }));
 
 import { agentsService } from './agents';
+import { queryClient } from '@/lib/queryClient';
+import { qk } from '@/lib/queryKeys';
 
 describe('agentsService authentication wire', () => {
   beforeEach(() => {
@@ -46,4 +53,51 @@ describe('agentsService authentication wire', () => {
       action: 'defaults',
     });
   });
+});
+
+describe('agentsService credential writes', () => {
+  const configured = { bedrockBearerTokenSet: true, kiroApiKeySet: false };
+  const cleared = { bedrockBearerTokenSet: false, kiroApiKeySet: false };
+
+  beforeEach(() => {
+    get.mockReset();
+    put.mockReset().mockResolvedValue({ saved: true });
+  });
+
+  it.each([
+    [
+      'personal',
+      () => agentsService.getPersonalCredentials(),
+      () => agentsService.updatePersonalCredentials({ bedrockBearerToken: '' }),
+      qk.personalCredentials(),
+    ],
+    [
+      'space',
+      () => agentsService.getProjectCredentials('p1'),
+      () => agentsService.updateProjectCredentials('p1', { bedrockBearerToken: '' }),
+      qk.projectCredentials('p1'),
+    ],
+  ] as const)(
+    '%s: a read started before Clear cannot bring the old status back',
+    async (_scope, read, clear, key) => {
+      let answerOldRead: (value: unknown) => void = () => {};
+      get
+        .mockImplementationOnce(
+          (_path: string, { signal }: { signal: AbortSignal }) =>
+            new Promise((resolve, reject) => {
+              answerOldRead = resolve;
+              signal.addEventListener('abort', () => reject(signal.reason));
+            }),
+        )
+        .mockResolvedValue(cleared);
+
+      const early = read();
+      await clear();
+      answerOldRead(configured);
+
+      await expect(early).resolves.toEqual(cleared);
+      await vi.waitFor(() => expect(queryClient.getQueryData(key)).toEqual(cleared));
+      expect(get).toHaveBeenCalledTimes(2);
+    },
+  );
 });
