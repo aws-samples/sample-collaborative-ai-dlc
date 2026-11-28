@@ -2822,6 +2822,19 @@ test('installer refreshes OS packages only on request and persists the epoch', (
   assert.equal(invalid.status, 0, invalid.stderr);
   assert.match(invalid.stderr, /ignoring the invalid OS package refresh marker/);
   assert.deepEqual(deployments().slice(-2), ['plan 2027-W03', 'apply 2027-W03']);
+  assert.doesNotMatch(invalid.stderr, /pinned images/);
+
+  // Pinned tags are not rebuilt, so the refresh says so before deploying.
+  writeFileSync(
+    tfvars,
+    `${readFileSync(tfvars, 'utf8')}agentcore_image_tag = "1.2.3"\nyjs_image_tag = null\n`,
+  );
+  const pinned = update(['--refresh-os-packages'], { AIDLC_FAKE_ISO_WEEK: '2027-W04' });
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.ok(
+    pinned.stderr.includes(`does not rebuild pinned images (agentcore in ${tfvars})`),
+    pinned.stderr,
+  );
 });
 
 test('tfvars_upsert appends on a new line when the file lacks a final newline', () => {

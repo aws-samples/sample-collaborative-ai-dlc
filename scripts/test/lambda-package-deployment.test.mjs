@@ -334,6 +334,32 @@ test('the summary says when pinned images ignore the epoch', (t) => {
   assert.doesNotMatch(result.stdout, /refreshed for epoch/);
 });
 
+test('a managed install warns when pinned images ignore the epoch', (t) => {
+  const managed = { AIDLC_MANAGED_INSTALL: '1', FAKE_EPOCH_OUTPUT: '2026-W48' };
+  const pinned = deploy(deploymentFixture(t), { ...managed, FAKE_PREBUILT: '["agentcore","yjs"]' });
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.doesNotMatch(pinned.stdout, /OS packages:/);
+  assert.match(
+    pinned.stderr,
+    /WARNING: OS package epoch 2026-W48 is configured, but pinned images are not rebuilt \(agentcore, yjs\)/,
+  );
+
+  const rebuilt = deploy(deploymentFixture(t), managed);
+  assert.equal(rebuilt.status, 0, rebuilt.stderr);
+  assert.doesNotMatch(rebuilt.stderr, /pinned images/);
+
+  const single = deploy(deploymentFixture(t), { ...managed, FAKE_PREBUILT: '["yjs"]' });
+  assert.match(single.stderr, /pinned images are not rebuilt \(yjs\)/);
+
+  // Without an epoch, pinning is the usual pre-built deployment: nothing to say.
+  const noEpoch = deploy(deploymentFixture(t), {
+    AIDLC_MANAGED_INSTALL: '1',
+    FAKE_PREBUILT: '["agentcore","yjs"]',
+  });
+  assert.equal(noEpoch.status, 0, noEpoch.stderr);
+  assert.doesNotMatch(noEpoch.stderr, /pinned images/);
+});
+
 test('plan/apply/preparation failures stop deployment before frontend publication', (t) => {
   for (const phase of ['plan', 'apply', 'release-preparation']) {
     const fixture = deploymentFixture(t);

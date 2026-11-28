@@ -154,6 +154,26 @@ tf_output() {
     terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true
 }
 
+# Images deployed from a pinned tag, which the OS package epoch does not rebuild.
+prebuilt_images() {
+    terraform -chdir="$TF_DIR" output -json prebuilt_images 2>/dev/null | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        try { process.stdout.write(JSON.parse(s).join(", ")); } catch {}
+      });
+    ' || true
+}
+
+# The installer prints its own summary, which has no OS packages line.
+warn_pinned_images() {
+    local os_packages_epoch prebuilt
+    os_packages_epoch="$(tf_output os_packages_epoch)"
+    [[ -n "$os_packages_epoch" ]] || return 0
+    prebuilt="$(prebuilt_images)"
+    [[ -n "$prebuilt" ]] || return 0
+    echo "WARNING: OS package epoch $os_packages_epoch is configured, but pinned images are not rebuilt ($prebuilt). Remove their *_image_tag variables from $TFVARS_FILE to refresh them." >&2
+}
+
 print_deployment_summary() {
     local application_url region deployed_environment custom_domain aliases auth_mode providers lambda_vpc_scope nat_ips os_packages_epoch prebuilt
     local oidc_callback saml_acs saml_entity_id
@@ -181,12 +201,7 @@ print_deployment_summary() {
     printf '  Authentication:  %s\n' "${auth_mode:-local}"
     os_packages_epoch="$(tf_output os_packages_epoch)"
     if [[ -n "$os_packages_epoch" ]]; then
-        prebuilt="$(terraform -chdir="$TF_DIR" output -json prebuilt_images 2>/dev/null | node -e '
-          let s = "";
-          process.stdin.on("data", (d) => (s += d)).on("end", () => {
-            try { process.stdout.write(JSON.parse(s).join(", ")); } catch {}
-          });
-        ')"
+        prebuilt="$(prebuilt_images)"
         if [[ -z "$prebuilt" ]]; then
             printf '  OS packages:     refreshed for epoch %s\n' "$os_packages_epoch"
         else
@@ -444,4 +459,6 @@ fi
 
 if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
     print_deployment_summary
+else
+    warn_pinned_images
 fi

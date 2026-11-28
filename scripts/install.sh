@@ -907,6 +907,15 @@ refresh_os_packages_epoch() {
         printf '%s\n%s\n' "$epoch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OS_PACKAGES_REFRESH_PENDING"
     fi
     tfvars_upsert "$tfvars" os_packages_epoch "$(hcl_string "$epoch")"
+    local image pinned=""
+    for image in agentcore yjs; do
+        if grep -qE "^[[:space:]]*${image}_image_tag[[:space:]]*=[[:space:]]*\"" "$tfvars"; then
+            pinned="${pinned:+$pinned, }$image"
+        fi
+    done
+    if [[ -n "$pinned" ]]; then
+        echo "Warning: the refresh does not rebuild pinned images ($pinned in $tfvars). Remove their *_image_tag variables from it to refresh them." >&2
+    fi
 }
 
 configure_environment() {
