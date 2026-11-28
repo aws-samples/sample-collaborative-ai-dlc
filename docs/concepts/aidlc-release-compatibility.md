@@ -40,7 +40,9 @@ can find the asset. The tag is reviewed with the profile and only locates the
 asset: the commit stays the identity, and the export refuses a release whose
 `version.json` names another commit. The 2.11.3 profile names
 `v2.11.3-preview.20261103.1`, the release built from its commit; the later
-`v2.11.3` tag is a different commit.
+`v2.11.3` tag is a different commit. A profile added for a later release must
+name its runtime release too: the profile tests fail for a profile from 2.8.2
+without one, and for an earlier profile with one.
 
 A custom fork names the official profile whose frontmatter dialect it uses (for
 example `v2.9.0`); that base grants no trust. It is recorded `T0` and
