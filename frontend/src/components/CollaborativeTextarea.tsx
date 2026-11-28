@@ -67,9 +67,13 @@ const editorTheme = EditorView.theme({
   '.cm-cursor, .cm-dropCursor': {
     borderLeftColor: 'currentColor',
   },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
-    backgroundColor: 'color-mix(in oklab, var(--ring) 24%, transparent)',
-  },
+  // The focused selector repeats CodeMirror's base-theme selector so it wins on
+  // specificity; a shorter one loses to the base light-theme colour (#d7d4f0),
+  // which leaves light text unreadable in the dark theme.
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground':
+    {
+      backgroundColor: 'var(--selection)',
+    },
   '.cm-placeholder': {
     color: 'var(--muted-foreground)',
     opacity: '1',
@@ -323,7 +327,7 @@ export function CollaborativeTextarea({
         ref={hostRef}
         data-collaborative-editor
         className={cn(
-          'w-full overflow-hidden focus-within:border-ring focus-within:outline-none',
+          'w-full overflow-hidden focus-within:border-ring focus-within:outline-none focus-within:ring-1 focus-within:ring-ring',
           disabled && 'cursor-not-allowed opacity-50',
           className,
         )}

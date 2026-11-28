@@ -72,6 +72,7 @@
 
 /* ─── Light Mode (Default) ─── */
 :root {
+  color-scheme: light;
   --background: oklch(0.985 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -86,11 +87,12 @@
   --muted-foreground: oklch(0.55 0.014 286);
   --accent: oklch(0.96 0.003 286);
   --accent-foreground: oklch(0.205 0.006 286);
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: oklch(0.53 0.22 27);
   --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.915 0.006 286);
   --input: oklch(0.915 0.006 286);
   --ring: oklch(0.553 0.013 286);
+  --selection: oklch(0.87 0.04 286);
 
   /* Charts */
   --chart-1: oklch(0.646 0.222 41.116);
@@ -136,6 +138,7 @@
 
 /* ─── Dark Mode ─── */
 .dark {
+  color-scheme: dark;
   --background: oklch(0.12 0.01 286);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.155 0.014 286);
@@ -150,11 +153,12 @@
   --muted-foreground: oklch(0.65 0.015 286);
   --accent: oklch(0.24 0.012 286);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.145 0 0);
   --border: oklch(0.28 0.014 286);
   --input: oklch(0.28 0.014 286);
   --ring: oklch(0.553 0.013 286);
+  --selection: oklch(0.4 0.03 286);
 
   /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);
@@ -199,8 +203,24 @@
 }
 
 /* ─── Base Styles ─── */
-* {
-  border-color: var(--border);
+/* In the base layer so `border-*` colour utilities can override it: an
+   unlayered rule wins over every layered utility. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+/* Forced-colours mode drops box-shadow, so the `ring-*` focus indicators
+   vanish and the controls that set `outline-none` show no focus at all.
+   Unlayered on purpose: it must win over the `outline-none` utilities. */
+@media (forced-colors: active) {
+  /* The editor content sits in an overflow-hidden host: outline the host. */
+  :focus-visible:not(.cm-content),
+  [data-collaborative-editor]:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
 }
 
 body {
