@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileQuestion, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { IntentGate } from '@/services/intents';
@@ -35,7 +35,15 @@ interface PendingQuestionsTabsProps {
   renderGateCard: (gate: IntentGate) => React.ReactNode;
   /** Short scan context per tab (stage name, unit lane) — null hides the prefix. */
   gateContext?: (gate: IntentGate) => string | null;
+  /**
+   * Bump to bring a validation gate into view: keeps the selected tab when it
+   * already is a validation gate, otherwise selects the first one. 0 = never asked.
+   */
+  revealValidationSignal?: number;
 }
+
+/** DOM id of the pending-gates region, so the intent header can scroll to it. */
+export const PENDING_GATES_ANCHOR_ID = 'pending-gates';
 
 const OVERFLOW_TRIGGER_ID = 'gate-tabs-overflow-trigger';
 
@@ -44,6 +52,7 @@ export function PendingQuestionsTabs({
   activeGateId,
   renderGateCard,
   gateContext,
+  revealValidationSignal = 0,
 }: PendingQuestionsTabsProps) {
   const [selectedId, setSelectedId] = useState<string>(
     () => activeGateId ?? gates[0]?.humanTaskId ?? '',
@@ -62,16 +71,40 @@ export function PendingQuestionsTabs({
     });
   }, [activeGateId, gateIdSig]);
 
+  // A new reveal request re-selects once; later gate changes never undo a manual tab pick,
+  // so the gate list is read through a ref instead of being an effect dependency.
+  const gatesRef = useRef(gates);
+  gatesRef.current = gates;
+  useEffect(() => {
+    if (revealValidationSignal === 0) return;
+    setSelectedId((current) => {
+      const all = gatesRef.current;
+      if (all.find((g) => g.humanTaskId === current)?.kind === 'validation') return current;
+      return all.find((g) => g.kind === 'validation')?.humanTaskId ?? current;
+    });
+  }, [revealValidationSignal]);
+
   const selectedGate = gates.find((g) => g.humanTaskId === selectedId) ?? gates[0] ?? null;
 
   if (!selectedGate) return null;
 
+  const headerLabel = selectedGate.kind === 'validation' ? 'Review required' : 'Questions for you';
+  const headerClass =
+    selectedGate.kind === 'validation'
+      ? 'text-sm font-semibold text-foreground'
+      : 'text-sm font-medium text-muted-foreground';
+
   if (gates.length === 1) {
     return (
-      <div role="region" aria-label="Pending questions" className="space-y-2">
+      <div
+        id={PENDING_GATES_ANCHOR_ID}
+        role="region"
+        aria-label="Pending questions"
+        className="space-y-2"
+      >
         <div className="flex items-center gap-2">
           <FileQuestion className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+          <span className={headerClass}>{headerLabel}</span>
           <Badge variant="secondary" className="h-4 px-1 text-[9px]">
             1
           </Badge>
@@ -86,10 +119,15 @@ export function PendingQuestionsTabs({
   const overflowGates = needsOverflow ? gates.filter((g) => !visibleGates.includes(g)) : [];
 
   return (
-    <div role="region" aria-label="Pending questions" className="space-y-2">
+    <div
+      id={PENDING_GATES_ANCHOR_ID}
+      role="region"
+      aria-label="Pending questions"
+      className="space-y-2"
+    >
       <div className="flex items-center gap-2">
         <FileQuestion className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
+        <span className={headerClass}>{headerLabel}</span>
         <Badge variant="secondary" className="h-4 px-1 text-[9px]">
           {gates.length}
         </Badge>

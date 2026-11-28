@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Compass } from 'lucide-react';
+import { ClipboardCheck, Compass } from 'lucide-react';
 import { buildUnitBranchItems, type UnitBranchItem } from '@/components/intent/CodeSection';
 import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
 
@@ -131,12 +131,23 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
     const stageArtifacts =
       detail?.artifacts.filter((a) => a.createdByStageInstanceId === gate.stageInstanceId) ?? [];
     return (
-      <Card>
+      <Card className="border-primary/50 bg-primary/5" data-testid="validation-gate-card">
         <CardContent className="space-y-3 py-3">
-          <div>
+          <div className="flex items-start justify-between gap-3">
             <p className="text-sm font-medium">
               Review the results of {gateStageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
             </p>
+            <Button
+              className="shrink-0"
+              onClick={() =>
+                navigate(`/space/${projectId}/intent/${intentId}/review/${gate.humanTaskId}`)
+              }
+            >
+              <ClipboardCheck className="mr-1.5 h-4 w-4" />
+              Review stage
+            </Button>
+          </div>
+          <div>
             <p className="mt-1 text-xs text-muted-foreground">
               The agent finished this stage and produced {stageArtifacts.length} artifact
               {stageArtifacts.length === 1 ? '' : 's'}. Review them and approve or request changes.
@@ -159,16 +170,6 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               ))}
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              onClick={() =>
-                navigate(`/space/${projectId}/intent/${intentId}/review/${gate.humanTaskId}`)
-              }
-            >
-              Review stage
-            </Button>
-          </div>
         </CardContent>
       </Card>
     );
