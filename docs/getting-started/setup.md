@@ -113,6 +113,17 @@ Building-block bodies are methodology markdown and sensor scripts. They legitima
 
 The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
 
+### API access log identity
+
+API Gateway writes one JSON line per REST API request to the CloudWatch log group `/aws/apigateway/<project_name>-rest-api-<environment>`, kept for 30 days in `prod` and 7 days elsewhere. The default fields are the request ID, source IP, IAM caller and user, request time, method, resource path, status, protocol and response length. The user who made a request is not among them.
+
+Set `api_access_log_identity = true` to add two fields from the Cognito authorizer:
+
+- `sub`: the caller's Cognito user ID, a pseudonymous personal identifier. It links a request to a user without a second log source.
+- `clientId`: the app client of an access token, for API clients that use one. It is empty (`-`) for the ID tokens the web application sends, and for routes without the Cognito authorizer.
+
+The default is `null`: enabled when `environment` is `prod`, disabled otherwise, so updating an existing `prod` deployment starts recording `sub`. Set it to `false` to keep the previous format. The flag never adds email addresses, usernames or tokens. The log group uses CloudWatch Logs default encryption, and any principal allowed to read CloudWatch Logs in the account can read it: restrict that access and apply your personal-data retention rules to it.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
@@ -215,7 +226,7 @@ Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v
 
 !!! warning "A production environment must be named exactly `prod`"
 
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, the caller's Cognito user ID in the REST API access log, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
 
     A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
 
