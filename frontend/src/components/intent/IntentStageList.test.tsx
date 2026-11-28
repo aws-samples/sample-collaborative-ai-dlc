@@ -340,8 +340,9 @@ describe('IntentStageList', () => {
 
     render(<IntentStageList />);
 
-    expect(screen.getByText('1/2')).toBeInTheDocument();
-    expect(screen.queryByText('1/4')).not.toBeInTheDocument();
+    // The bar carries the progress; no "1/2" is written beside it.
+    expect(screen.getByRole('progressbar', { name: '1 of 2 stages completed' })).toBeVisible();
+    expect(screen.queryByText(/^\d+\/\d+$/)).not.toBeInTheDocument();
     const fold = screen.getByRole('button', { name: /2 stages not selected/ });
     expect(fold).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('User Stories')).not.toBeInTheDocument();
@@ -476,10 +477,10 @@ describe('IntentStageList', () => {
     render(<IntentStageList />);
 
     const headers = screen.getAllByRole('button', { name: /^(Initialization|Ideation)/ });
-    expect(headers.map((h) => h.textContent)).toEqual([
-      expect.stringMatching(/^Initialization0\/3/),
-      expect.stringMatching(/^Ideation0\/1/),
-    ]);
+    expect(headers.map((h) => h.textContent)).toEqual(['Initialization', 'Ideation']);
+    expect(screen.getAllByRole('progressbar').map((bar) => bar.getAttribute('aria-label'))).toEqual(
+      ['0 of 3 stages completed', '0 of 1 stages completed'],
+    );
     // Phase headers read in sentence case, not uppercase microtext.
     expect(screen.getByText('Initialization')).not.toHaveClass('uppercase');
   });

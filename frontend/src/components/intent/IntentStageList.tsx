@@ -239,22 +239,17 @@ export function IntentStageList() {
                     <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground/30" />
                   )}
                   <span className="text-xs font-medium text-muted-foreground">{phaseName}</span>
-                  <span className="ml-auto flex items-center gap-2 text-2xs tabular-nums text-muted-foreground">
-                    <span>
-                      {done}/{g.rows.length}
-                    </span>
-                    <Progress
-                      value={pct}
-                      aria-label={`${done} of ${g.rows.length} stages completed`}
-                      className={cn(
-                        'w-12 h-1.5',
-                        allDone && '[&>div]:bg-agent-success',
-                        running && '[&>div]:bg-agent-running',
-                        waiting && !running && '[&>div]:bg-agent-waiting',
-                        failed && !active && '[&>div]:bg-agent-error',
-                      )}
-                    />
-                  </span>
+                  <Progress
+                    value={pct}
+                    aria-label={`${done} of ${g.rows.length} stages completed`}
+                    className={cn(
+                      'ml-auto w-12 h-1.5 shrink-0',
+                      allDone && '[&>div]:bg-agent-success',
+                      running && '[&>div]:bg-agent-running',
+                      waiting && !running && '[&>div]:bg-agent-waiting',
+                      failed && !active && '[&>div]:bg-agent-error',
+                    )}
+                  />
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-2 pb-2 pt-1.5">
