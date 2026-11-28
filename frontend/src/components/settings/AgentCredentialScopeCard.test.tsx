@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import type { AgentAuthenticationView } from '@/services/agents';
 import type { AgentAuthProviderUi, AgentAuthSetupProps } from './agent-auth/contract';
 
+const getSettings = vi.fn();
 const getPersonalCredentials = vi.fn();
 const updatePersonalCredentials = vi.fn();
 const getProjectCredentials = vi.fn();
@@ -12,6 +13,7 @@ const updateProjectCredentials = vi.fn();
 
 vi.mock('@/services/agents', () => ({
   agentsService: {
+    getSettings: (...args: unknown[]) => getSettings(...args),
     getPersonalCredentials: (...args: unknown[]) => getPersonalCredentials(...args),
     updatePersonalCredentials: (...args: unknown[]) => updatePersonalCredentials(...args),
     getProjectCredentials: (...args: unknown[]) => getProjectCredentials(...args),
@@ -600,7 +602,7 @@ describe('AgentCredentialScopeCard', () => {
     render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
 
     expect(await screen.findByText(/Space key override/)).toBeInTheDocument();
-    expect(screen.getByText('1 provider configured')).toBeInTheDocument();
+    expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Rotate Bedrock key' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Clear Bedrock key' })).toBeEnabled();
   });
@@ -673,6 +675,34 @@ describe('AgentCredentialScopeCard', () => {
       );
       expect(await screen.findByText('Kiro key missing')).toHaveAttribute('data-tone', 'warning');
     });
+
+    it('shows no provider count for a space with its own key: the row says Set', async () => {
+      getProjectCredentials.mockResolvedValue(SPACE_B_STATUS);
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      expect(await screen.findByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
+      expect(screen.getByText('Set')).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Uses platform keys')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('platform status', () => {
+    it('shows no provider count when a platform key is set', async () => {
+      getSettings.mockResolvedValue({ bedrockBearerTokenSet: true, kiroApiKeySet: true });
+      render(<AgentCredentialScopeCard scope="platform" />);
+
+      expect(await screen.findByRole('button', { name: 'Rotate Bedrock key' })).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
+      expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
+    });
+
+    it('still warns when the platform has no key at all', async () => {
+      getSettings.mockResolvedValue({ bedrockBearerTokenSet: false, kiroApiKeySet: false });
+      render(<AgentCredentialScopeCard scope="platform" />);
+
+      expect(await screen.findByText('No credentials')).toHaveAttribute('data-tone', 'warning');
+    });
   });
 
   describe('as a disclosure (Space › Agent)', () => {
@@ -693,7 +723,6 @@ describe('AgentCredentialScopeCard', () => {
         <AgentCredentialScopeCard scope="space" projectId="space-1" presentation="disclosure" />,
       );
 
-      expect(await screen.findAllByText('1 provider configured')).not.toHaveLength(0);
       await waitFor(() =>
         expect(screen.getByRole('button', { name: 'Agent credentials' })).toHaveAttribute(
           'aria-expanded',
@@ -701,6 +730,7 @@ describe('AgentCredentialScopeCard', () => {
         ),
       );
       expect(screen.getByRole('button', { name: 'Rotate Kiro key' })).toBeVisible();
+      expect(screen.queryByText(/providers? configured/)).not.toBeInTheDocument();
     });
 
     it('opens when an enabled CLI has no key anywhere', async () => {

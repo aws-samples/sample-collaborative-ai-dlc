@@ -481,26 +481,22 @@ export function AgentCredentialScopeCard({
         notOkLabel="Not set: shared keys are used"
       />
     ) : scope === 'space' ? (
+      // The rows already say which keys are set, so a space with its keys shows no status.
       // A key of the space's own does not help when the agents need the other one.
-      <ConfigStatusBadge
-        ok={configuredCount > 0 && missingProviders.length === 0}
-        okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
-        notOkLabel={
-          missingProviders.length
-            ? missingLabel
-            : platformHasKey
-              ? 'Uses platform keys'
-              : 'No keys set'
-        }
-        notOkTone={missingProviders.length ? 'warning' : 'neutral'}
-      />
+      (configuredCount === 0 || missingProviders.length > 0) && (
+        <ConfigStatusBadge
+          notOkLabel={
+            missingProviders.length
+              ? missingLabel
+              : platformHasKey
+                ? 'Uses platform keys'
+                : 'No keys set'
+          }
+          notOkTone={missingProviders.length ? 'warning' : 'neutral'}
+        />
+      )
     ) : (
-      <ConfigStatusBadge
-        ok={configuredCount > 0}
-        okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
-        notOkLabel="No credentials"
-        notOkTone="warning"
-      />
+      configuredCount === 0 && <ConfigStatusBadge notOkLabel="No credentials" notOkTone="warning" />
     ));
 
   // Open only when this scope deviates from inheritance or something is missing.
