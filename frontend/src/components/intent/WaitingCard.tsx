@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useIntent } from '@/contexts/IntentContext';
-import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -23,6 +22,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RotateCcw } from 'lucide-react';
+import { useReturnFocus } from '@/components/intent/useReturnFocus';
 
 // ---------------------------------------------------------------------------
 // WaitingCard — rich "parked, waiting on human" state with context + actions.
@@ -46,6 +46,7 @@ export function WaitingCard({
   mayControlStage,
 }: WaitingCardProps) {
   const [confirmRestart, setConfirmRestart] = useState(false);
+  const returnFocusAfterRestart = useReturnFocus(confirmRestart);
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [guidance, setGuidance] = useState('');
   const [rewinding, setRewinding] = useState(false);
@@ -61,8 +62,6 @@ export function WaitingCard({
   const displayStageName = parkedRow?.stageInstanceId
     ? stageNameOf(parkedRow.stageInstanceId)
     : stageId;
-
-  const waitingSince = activeGate?.createdAt ?? parkedRow?.parkedAt ?? null;
 
   let questionPreview: string | null = null;
   if (activeGate) {
@@ -117,12 +116,9 @@ export function WaitingCard({
         <div className="min-w-0 space-y-1.5">
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-agent-waiting" />
-            <span className="text-sm font-semibold text-agent-waiting">Waiting for your input</span>
-            {waitingSince && (
-              <span className="text-xs text-muted-foreground">
-                since {getTimeAgo(waitingSince)}
-              </span>
-            )}
+            <span className="text-sm font-semibold text-agent-waiting-fg">
+              Waiting for your input
+            </span>
           </div>
           {displayStageName && (
             <p className="text-xs text-muted-foreground">
@@ -130,9 +126,7 @@ export function WaitingCard({
             </p>
           )}
           {questionPreview && (
-            <p className="line-clamp-1 text-xs text-muted-foreground italic">
-              &ldquo;{questionPreview}&rdquo;
-            </p>
+            <p className="text-xs text-muted-foreground italic">&ldquo;{questionPreview}&rdquo;</p>
           )}
         </div>
       </div>
@@ -176,7 +170,7 @@ export function WaitingCard({
           }
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent onCloseAutoFocus={returnFocusAfterRestart}>
           <AlertDialogHeader>
             <AlertDialogTitle>Restart stage</AlertDialogTitle>
             <AlertDialogDescription>

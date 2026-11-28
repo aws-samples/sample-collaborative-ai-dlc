@@ -41,6 +41,7 @@ import type { ConnectionStatus } from '@/services/realtime';
 import type {
   Intent,
   IntentGate,
+  IntentSensorRun,
   IntentStage,
   IntentStatus,
   StageState,
@@ -662,6 +663,26 @@ export function statusLabel<K extends StatusKind>(
   const label = (compact && COMPACT_LABELS[`${kind}:${status}`]) || getStatus(kind, status).label;
   if (!age) return label;
   return TERMINAL_STATUSES[kind]?.has(status) ? `${label} ${age} ago` : `${label} · ${age}`;
+}
+
+/**
+ * Sensor verdict → display key. Only a held (blocking) verdict is red; an
+ * advisory miss stays neutral.
+ */
+export function deriveSensorStatus(
+  run: Pick<IntentSensorRun, 'result' | 'severity' | 'held'>,
+): SensorStatusKey {
+  if (run.held) return 'blocking';
+  switch (run.result) {
+    case 'PASS':
+      return 'passed';
+    case 'FAIL':
+      return 'advisory';
+    case 'INCONCLUSIVE':
+      return 'inconclusive';
+    default:
+      return 'not_run';
+  }
 }
 
 // ── One status per intent, on every surface ──────────────────────────────────

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within } from '@/test/query';
 import { describe, expect, it } from 'vitest';
 import type { SensorDetail } from '@/services/intents';
 import { SENSOR_DIAGNOSTIC_LIMITS, SensorDiagnostics } from './SensorDiagnostics';

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
+import userEvent from '@testing-library/user-event';
 import { SensorChips, summarizeSensorDetail } from './SensorChips';
 import type { IntentSensorRun, SensorDetail } from '@/services/intents';
 
@@ -222,7 +223,7 @@ describe('summarizeSensorDetail', () => {
 });
 
 describe('SensorChips', () => {
-  it("puts a script sensor's reason on the chip the reader hovers", () => {
+  it("puts a script sensor's reason in the tooltip of a human-named pill", async () => {
     render(
       <SensorChips
         runs={[
@@ -237,9 +238,84 @@ describe('SensorChips', () => {
         ]}
       />,
     );
-    expect(screen.getByText('linter').closest('[title]')).toHaveAttribute(
-      'title',
-      'linter: FAIL (blocking) — blocking — src/app.ts: 2 problems',
+    const pill = screen.getByText('Linter').closest('[data-tone]');
+    expect(pill).toHaveAttribute('data-tone', 'danger');
+    expect(pill).toHaveTextContent('Blocking');
+    expect(screen.queryByText('linter')).not.toBeInTheDocument();
+    expect(pill).not.toHaveAttribute('title');
+
+    await userEvent.tab();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('src/app.ts: 2 problems');
+  });
+
+  // AU2: red is reserved for a held (blocking) verdict.
+  it('keeps an advisory miss neutral and a passed check green', () => {
+    render(
+      <SensorChips
+        runs={[
+          run({
+            sensorRunId: 'a',
+            sensorId: 'upstream-coverage',
+            result: 'INCONCLUSIVE',
+            held: false,
+          }),
+          run({ sensorRunId: 'b', sensorId: 'required-sections', result: 'PASS', held: false }),
+        ]}
+      />,
     );
+    expect(screen.getByText('Upstream Coverage').closest('[data-tone]')).toHaveAttribute(
+      'data-tone',
+      'neutral',
+    );
+    expect(screen.getByText('Required Sections').closest('[data-tone]')).toHaveAttribute(
+      'data-tone',
+      'success',
+    );
+  });
+
+  it('summarises a collapsed row as the checks holding the stage, named in its title and never a tab stop', () => {
+    render(
+      <SensorChips
+        summary
+        runs={[
+          run({
+            sensorRunId: 'a',
+            sensorId: 'upstream-coverage',
+            result: 'INCONCLUSIVE',
+            held: false,
+          }),
+          run({ sensorRunId: 'b', sensorId: 'intent-statement', result: 'FAIL', held: false }),
+          run({ sensorRunId: 'c', sensorId: 'required-sections', result: 'PASS', held: false }),
+          run({ sensorRunId: 'd', sensorId: 'type-check', result: 'FAIL', held: true }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('1 blocking check').closest('[data-tone]')).toHaveAttribute(
+      'data-tone',
+      'danger',
+    );
+    // Advisory misses do not hold the stage: no pill for them on a row.
+    expect(screen.queryByText(/advisory/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Required Sections/)).not.toBeInTheDocument();
+
+    // It sits inside the stage row's button: not focusable, no tooltip.
+    const pill = screen.getByText('1 blocking check').closest('[data-tone]');
+    expect(pill).not.toHaveAttribute('tabindex');
+    expect(pill?.getAttribute('title')).toContain('Type Check');
+    expect(pill?.getAttribute('title')).not.toContain('Upstream Coverage');
+  });
+
+  it('renders nothing in summary mode when only advisory checks missed', () => {
+    const { container } = render(
+      <SensorChips summary runs={[run({ result: 'INCONCLUSIVE', held: false })]} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders nothing in summary mode when every check passed', () => {
+    const { container } = render(
+      <SensorChips summary runs={[run({ result: 'PASS', held: false })]} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });

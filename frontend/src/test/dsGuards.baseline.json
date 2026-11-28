@@ -140,7 +140,6 @@
     "components/intent/IntentPhaseDiagram.tsx": 1,
     "components/intent/NativeExportSetupDialog.tsx": 1,
     "components/intent/StageReviewPanel.tsx": 6,
-    "components/intent/UnitLaneBoard.tsx": 3,
     "components/project-settings/AgentTab.tsx": 1,
     "components/project-settings/SourceControlBindingSection.tsx": 1,
     "components/project-settings/TrackersTab.tsx": 1,

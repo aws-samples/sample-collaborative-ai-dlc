@@ -89,22 +89,19 @@ The **Observability** button opens the intent's execution dashboard:
   each, on a smaller model), the subagents of a run stopped before it reported,
   and spend at a long-context rate (see [Where prices come from](#where-prices-come-from)).
 
-- **Execution progress** — the stage pipeline in three switchable views (your choice is remembered):
-  - **Diagram** — a phase-grouped flow diagram with per-phase progress.
-  - **Graph** — the workflow scope graph with live stage status overlaid.
-  - **List** — a phase-grouped accordion of stages.
+- **Execution progress** — one list of stages, grouped by phase, with per-phase progress. **View stage dependencies** opens the workflow scope graph in a side sheet, with live stage status overlaid; hover or focus a stage to see its dependencies, and select it to open its detail in the list.
 
-Selecting any stage opens the **stage detail** drill-down:
+The stage that needs you (waiting, failed, or running) is open by default; finished stages stay folded. Selecting any stage opens the **stage detail** drill-down:
 
 - State, attempt count, and the CLI/model that ran it
-- Durations — total wall clock split into **active** vs. **waiting** (parked on humans)
+- One duration; the split into **active** vs. **waiting** (parked on humans) is under **Details**
 - Dependencies on other stages, derived from the compiled workflow
 - **Sensor runs** with verdict (PASS / FAIL / INCONCLUSIVE), severity, and whether a blocking sensor held the stage
-- Per-stage token usage and cost
-- Artifacts produced and gates answered
+- Per-stage model, token usage and cost, under **Details**
+- Artifacts produced, and an open question or review as one line with its action; earlier ones are a count under **Details**
 - **Restart from this stage** — the rewind entry point (below)
 
-During parallel construction, the list shows one row per unit lane (with a unit chip), while the graph aggregates to one node per stage with an ×N count. A **lane board** shows the construction waves: each unit's state, dependencies, branch, and the walking-skeleton highlight.
+During parallel construction, the list shows one row per unit lane (with a unit chip), while the graph aggregates to one node per stage with an ×N count; selecting such a node asks which unit to open. A **lane board** shows the construction waves: each unit's state, dependencies, branch, and the walking-skeleton highlight.
 
 ## The graph page
 

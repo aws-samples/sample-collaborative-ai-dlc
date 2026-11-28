@@ -101,15 +101,15 @@ function HarnessFailure({ failure }: { failure: SensorHarnessFailure }) {
         {exitCode !== null && <span>exit {exitCode}</span>}
       </div>
       {sampleFiles.length > 0 && (
-        <p className="mt-1 break-all font-mono text-[10px]">Samples: {sampleFiles.join(', ')}</p>
+        <p className="mt-1 break-all font-mono text-2xs">Samples: {sampleFiles.join(', ')}</p>
       )}
       {sampleFilesOmitted > 0 && (
-        <p className="mt-1 text-[10px]">
+        <p className="mt-1 text-2xs">
           {plural(sampleFilesOmitted, 'additional sample')} hidden — frontend display limit.
         </p>
       )}
       {stderr && (
-        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[10px] leading-relaxed text-foreground">
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-2xs leading-relaxed text-foreground">
           {stderr}
         </pre>
       )}
@@ -134,14 +134,14 @@ function FileDiagnostic({ entry }: { entry: SensorFileDiagnostic }) {
   return (
     <li className="rounded border bg-background/60 p-2">
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="break-all font-mono text-[10px] text-foreground">{file}</span>
+        <span className="break-all font-mono text-2xs text-foreground">{file}</span>
         {result && <Badge variant="outline">{result}</Badge>}
         {entry.timedOut === true && <span>timed out</span>}
         {exitCode !== null && <span>exit {exitCode}</span>}
         {reason && <span>{reason}</span>}
       </div>
       {stderr && (
-        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[10px] leading-relaxed text-foreground">
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-2xs leading-relaxed text-foreground">
           {stderr}
         </pre>
       )}
@@ -188,7 +188,7 @@ export function SensorDiagnostics({
   const safeSensorId = redactRenderedDiagnostic(sensorId, 128) ?? 'sensor';
   return (
     <div
-      className="mt-1.5 space-y-1.5 rounded-md border border-dashed px-2.5 py-2 text-[11px] text-muted-foreground"
+      className="mt-1.5 space-y-1.5 rounded-md border border-dashed px-2.5 py-2 text-2xs text-muted-foreground"
       aria-label={`Bounded diagnostics for ${safeSensorId}`}
     >
       <p className="font-medium text-foreground">Harness diagnostics</p>

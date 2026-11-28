@@ -51,6 +51,45 @@ vi.mock('@/services/intents', () => ({
     start: (...a: unknown[]) => start(...a),
   },
 }));
+// The stage list is owned by another task; this stand-in keeps the page test
+// about the page: the list stays mounted (local state survives) and it carries
+// the real "View stage dependencies" trigger in its footer, as the component does.
+vi.mock('@/components/intent/IntentStageList', async () => {
+  const React = await import('react');
+  const { useIntent, stageRowKey } = await import('@/contexts/IntentContext');
+  const { IntentStageDependencies } = await import('@/components/intent/IntentPhaseDiagram');
+  return {
+    IntentStageList: () => {
+      const { stageRows, selectedStageId, setSelectedStageId } = useIntent();
+      const [phaseOpen, setPhaseOpen] = React.useState(false);
+      if (stageRows.length === 0) return <p>No stages resolved yet.</p>;
+      return (
+        <div>
+          <button type="button" aria-expanded={phaseOpen} onClick={() => setPhaseOpen((o) => !o)}>
+            Phase
+          </button>
+          <ul>
+            {stageRows.map((row) => {
+              const key = stageRowKey(row);
+              return (
+                <li key={key}>
+                  <button
+                    type="button"
+                    aria-expanded={selectedStageId === key}
+                    onClick={() => setSelectedStageId(selectedStageId === key ? null : key)}
+                  >
+                    {row.stageId}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <IntentStageDependencies />
+        </div>
+      );
+    },
+  };
+});
 vi.mock('@/services/workflows', () => ({
   workflowsService: {
     compiled: (...a: unknown[]) => compiled(...a),
@@ -291,15 +330,68 @@ describe('IntentObservabilityPage — load recovery', () => {
 });
 
 describe('IntentObservabilityPage — execution progress', () => {
-  it('keeps the diagram, dependencies and list views', async () => {
+  it('renders the stage list without a view toggle', async () => {
     get.mockResolvedValue(baseDetail());
     renderPage();
 
     await screen.findByText('Execution progress');
-    expect(screen.getByRole('group', { name: 'Execution view' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Diagram' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Dependencies' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'List' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Execution view' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'List' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Dependencies' })).not.toBeInTheDocument();
+    expect(screen.getByText('No stages resolved yet.')).toBeInTheDocument();
+  });
+
+  it('offers the stage dependencies through the list footer trigger', async () => {
+    get.mockResolvedValue(
+      baseDetail(
+        {},
+        {
+          stages: [stage('reverse-engineering'), stage('requirements-analysis')],
+        },
+      ),
+    );
+    renderPage();
+
+    await screen.findByRole('button', { name: 'reverse-engineering' });
+    const trigger = screen.getByRole('button', { name: 'View stage dependencies' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('dialog', { name: 'Stage dependencies' })).toBeInTheDocument();
+  });
+
+  it('keeps the stage the user expanded after viewing the dependencies', async () => {
+    get.mockResolvedValue(
+      baseDetail(
+        {},
+        {
+          stages: [stage('reverse-engineering'), stage('requirements-analysis')],
+        },
+      ),
+    );
+    renderPage();
+
+    const row = await screen.findByRole('button', { name: 'reverse-engineering' });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(row);
+    await userEvent.click(screen.getByRole('button', { name: 'Phase' }));
+    expect(screen.getByRole('button', { name: 'reverse-engineering' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'View stage dependencies' }));
+    await screen.findByRole('dialog', { name: 'Stage dependencies' });
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Stage dependencies' })).not.toBeInTheDocument(),
+    );
+
+    expect(screen.getByRole('button', { name: 'reverse-engineering' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Phase' })).toHaveAttribute('aria-expanded', 'true');
   });
 });
 

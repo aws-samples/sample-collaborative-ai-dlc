@@ -3,7 +3,6 @@ import remarkGfm from 'remark-gfm';
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
   FilePenLine,
   FileText,
   Files,
@@ -13,6 +12,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Disclosure } from '@/components/ui/disclosure';
 import type { IntentOutput, IntentOutputDisplay } from '@/services/intents';
 
 const outputTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -225,6 +225,18 @@ function progressEntries(rows: IntentOutput[]): ProgressEntry[] {
   return coalesceQuestionLifecycle(coalesceNativeFsRows(visible));
 }
 
+export function latestProgressLine(rows: IntentOutput[]): string | null {
+  const entries = progressEntries(rows);
+  const last = entries[entries.length - 1];
+  if (!last) return null;
+  const body = cleanProgressText(last.display.title || last.display.summary || last.row.content)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .pop();
+  return body || null;
+}
+
 export function AgentOutputTranscript({
   rows,
   loading = false,
@@ -287,7 +299,7 @@ function ProgressRow({ row, display }: { row: IntentOutput; display: IntentOutpu
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-start justify-between gap-3">
             {isNarration ? (
-              <div className="prose prose-sm max-w-none min-w-0 break-words text-xs leading-snug dark:prose-invert [&_code]:text-[11px] [&_p]:my-0 [&_p]:leading-snug">
+              <div className="prose prose-sm max-w-none min-w-0 break-words text-xs leading-snug dark:prose-invert [&_code]:text-2xs [&_p]:my-0 [&_p]:leading-snug">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
               </div>
             ) : (
@@ -299,29 +311,25 @@ function ProgressRow({ row, display }: { row: IntentOutput; display: IntentOutpu
               <time
                 dateTime={row.timestamp}
                 title={outputTimeTitle(row.timestamp)}
-                className="shrink-0 whitespace-nowrap font-mono text-[10px] tabular-nums text-muted-foreground/70"
+                className="shrink-0 whitespace-nowrap font-mono text-2xs tabular-nums text-muted-foreground"
               >
                 {formattedTime}
               </time>
             )}
           </div>
           {display.summary && cleanProgressText(display.summary) !== body && (
-            <div className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+            <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
               {cleanProgressText(display.summary)}
             </div>
           )}
         </div>
       </div>
       {display.details && (
-        <details className="group mt-2" open={isProblem}>
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
-            <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
-            Details
-          </summary>
-          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[11px] leading-relaxed">
+        <Disclosure variant="inline" title="Details" defaultOpen={isProblem} className="mt-2">
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-2xs leading-relaxed">
             {display.details}
           </pre>
-        </details>
+        </Disclosure>
       )}
     </div>
   );

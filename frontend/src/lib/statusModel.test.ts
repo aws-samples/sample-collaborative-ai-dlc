@@ -3,6 +3,7 @@ import {
   STATUS_REGISTRY,
   ageLabel,
   deriveIntentStatus,
+  deriveSensorStatus,
   getStatus,
   intentStatusLabel,
   isTerminalIntentStatus,
@@ -56,6 +57,20 @@ describe('STATUS_REGISTRY', () => {
       tone: 'neutral',
     });
     expect(getStatus('intent', 'SOMETHING_NEW').live).toBeFalsy();
+  });
+});
+
+describe('deriveSensorStatus', () => {
+  it.each([
+    [{ result: 'PASS', held: false }, 'passed', 'success'],
+    [{ result: 'FAIL', held: false }, 'advisory', 'neutral'],
+    [{ result: 'INCONCLUSIVE', held: false }, 'inconclusive', 'neutral'],
+    [{ result: 'BLOCKED', held: false }, 'not_run', 'neutral'],
+    [{ result: 'FAIL', held: true }, 'blocking', 'danger'],
+    [{ result: 'BLOCKED', held: true }, 'blocking', 'danger'],
+  ] as const)('%o → %s (%s): only a held verdict is red', (run, key, tone) => {
+    expect(deriveSensorStatus({ ...run, severity: 'advisory' })).toBe(key);
+    expect(getStatus('sensor', key).tone).toBe(tone);
   });
 });
 

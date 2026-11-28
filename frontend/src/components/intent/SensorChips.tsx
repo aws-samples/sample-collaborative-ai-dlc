@@ -1,19 +1,10 @@
-import { Badge } from '@/components/ui/badge';
+import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { humanizeSlug } from '@/lib/displayNames';
+import { TONE_CLASSES, deriveSensorStatus, getStatus, type StatusTone } from '@/lib/statusModel';
 import { redactRenderedDiagnostic } from '@/components/intent/SensorDiagnostics';
 import type { IntentSensorRun, SensorDetail } from '@/services/intents';
-
-// Sensor result → chip styling. `held: true` marks a blocking failure — the
-// run is held on it — so it gets the loudest treatment. INCONCLUSIVE is an
-// advisory miss (the check ran but couldn't confirm — e.g. a required artifact
-// "not found in graph"): it does NOT hold the stage, but it is still worth
-// flagging, so it gets the warning palette rather than a muted one.
-const RESULT_CLS: Record<string, string> = {
-  PASS: 'bg-agent-success/15 text-agent-success border-agent-success/30',
-  FAIL: 'bg-agent-error/15 text-agent-error border-agent-error/30',
-  INCONCLUSIVE: 'bg-agent-waiting/15 text-agent-waiting border-agent-waiting/30',
-  BLOCKED: 'bg-muted/50 text-muted-foreground border-transparent',
-};
 
 // A non-PASS verdict is worth the reader's attention even when it did not hold
 // the stage (advisory INCONCLUSIVE/FAIL). Used to mark the chip and drive the
@@ -109,32 +100,95 @@ export function latestSensorRuns(runs: IntentSensorRun[]): IntentSensorRun[] {
   return [...bySensor.values()];
 }
 
-export function SensorChips({ runs, className }: { runs: IntentSensorRun[]; className?: string }) {
+function sensorLine(run: IntentSensorRun): string {
+  const explain = summarizeSensorDetail(run.detail, run.result);
+  return explain ? `${humanizeSlug(run.sensorId)} — ${explain}` : humanizeSlug(run.sensorId);
+}
+
+function SensorTooltip({ children, lines }: { children: ReactNode; lines: string[] }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent className="max-w-xs space-y-1">
+          {lines.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+const Pill = forwardRef<
+  HTMLSpanElement,
+  { tone: StatusTone; focusable?: boolean } & HTMLAttributes<HTMLSpanElement>
+>(function Pill({ tone, focusable = true, className, children, ...props }, ref) {
+  return (
+    <span
+      ref={ref}
+      data-tone={tone}
+      tabIndex={focusable ? 0 : undefined}
+      className={cn(
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-2xs font-medium',
+        'cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        TONE_CLASSES[tone].pill,
+        className,
+      )}
+      {...props}
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+      {children}
+    </span>
+  );
+});
+
+// Latest verdict per sensor. `summary` is for a collapsed row and shows only
+// what holds the stage: one "1 blocking check" pill, nothing otherwise
+// (advisory misses are listed in the stage detail). The full mode names every
+// sensor with its registry status.
+export function SensorChips({
+  runs,
+  summary = false,
+  className,
+}: {
+  runs: IntentSensorRun[];
+  summary?: boolean;
+  className?: string;
+}) {
   const latest = latestSensorRuns(runs);
   if (latest.length === 0) return null;
+
+  if (summary) {
+    const blocking = latest.filter((r) => sensorNeedsAttention(r) && r.held);
+    if (blocking.length === 0) return null;
+    const entry = getStatus('sensor', 'blocking');
+    // The row is itself a button: no tab stop or tooltip inside it, the names
+    // go in `title` (the stage detail lists them in full).
+    return (
+      <Pill
+        tone={entry.tone}
+        focusable={false}
+        title={[...blocking.map(sensorLine), entry.help].join('\n')}
+        className={className}
+      >
+        {blocking.length} blocking check{blocking.length === 1 ? '' : 's'}
+      </Pill>
+    );
+  }
+
   return (
     <span className={cn('inline-flex flex-wrap items-center gap-1', className)}>
       {latest.map((r) => {
+        const entry = getStatus('sensor', deriveSensorStatus(r));
         const explain = summarizeSensorDetail(r.detail, r.result);
-        const attention = sensorNeedsAttention(r);
         return (
-          <Badge
-            key={r.sensorRunId}
-            variant="outline"
-            title={`${r.sensorId}: ${r.result}${r.severity ? ` (${r.severity})` : ''}${
-              r.held ? ' — blocking' : ''
-            }${explain ? ` — ${explain}` : ''}`}
-            className={cn(
-              'px-1 py-0 text-[9px] gap-0.5',
-              RESULT_CLS[r.result] ?? RESULT_CLS.BLOCKED,
-            )}
-          >
-            {/* A non-PASS advisory verdict is easy to miss as just a colour;
-                a leading marker makes "needs a look" scannable in the row. */}
-            {attention && !r.held && <span aria-hidden>⚠</span>}
-            {r.sensorId}
-            {r.held && <span className="font-semibold">· blocking</span>}
-          </Badge>
+          <SensorTooltip key={r.sensorRunId} lines={[explain ?? entry.label, entry.help]}>
+            <Pill tone={entry.tone}>
+              <span>{humanizeSlug(r.sensorId)}</span>
+              <span className="font-normal opacity-80">{entry.label}</span>
+            </Pill>
+          </SensorTooltip>
         );
       })}
     </span>
