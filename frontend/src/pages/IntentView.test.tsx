@@ -2625,6 +2625,11 @@ describe('IntentView — resume after a failed gate callback', () => {
   beforeEach(() => {
     clearIntentCache();
     get.mockReset();
+    projectCacheMock.role = 'owner';
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [],
+    });
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -2673,6 +2678,22 @@ describe('IntentView — resume after a failed gate callback', () => {
     expect(screen.getByText('Your answer was saved but the run did not continue')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Resume run' }));
     expect(resume).toHaveBeenCalledWith('p1', 'i1');
+  });
+
+  // #838: Resume re-sends a decision, so it follows the stage's permissions.
+  it('disables Resume for a member who may not decide the stage', async () => {
+    projectCacheMock.role = 'member';
+    getResponsibilities.mockResolvedValue({
+      stages: [{ stageInstanceId: 'si-1', access: { edit: true, decide: false } }],
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+      gates: [answered()],
+    });
+    renderAt();
+
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Resume run' })).toBeDisabled();
   });
 
   it('does not offer it once the intent is no longer waiting', async () => {
@@ -2952,6 +2973,11 @@ describe('IntentView — Work header, recovery line and actions', () => {
   beforeEach(() => {
     clearIntentCache();
     get.mockReset();
+    projectCacheMock.role = 'owner';
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [],
+    });
     cancel.mockReset();
     del.mockReset();
     start.mockReset();
@@ -3210,6 +3236,41 @@ describe('IntentView — Work header, recovery line and actions', () => {
     expect(rewind).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Restart from this stage' }));
     expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'reverse-engineering' });
+  });
+
+  // #838: the recovery line keeps the rule of the failure box it replaces.
+  it('disables the restart for a member who may not decide the failed stage', async () => {
+    projectCacheMock.role = 'member';
+    getResponsibilities.mockResolvedValue({
+      stages: [
+        {
+          stageId: 'reverse-engineering',
+          stageInstanceId: 'si-re',
+          access: { edit: false, decide: false },
+        },
+      ],
+    });
+    compiled.mockResolvedValue({
+      graph: { nodes: [{ stageId: 'reverse-engineering', phasePath: '01', order: 0 }], edges: [] },
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'FAILED', currentStage: 'reverse-engineering' }),
+      stages: [
+        {
+          stageInstanceId: 'si-re',
+          stageId: 'reverse-engineering',
+          state: 'FAILED',
+          phase: 'inception',
+          runtimeError: 'not_implemented: mode pipeline',
+        },
+      ],
+    });
+    renderAt();
+
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(
+      await screen.findByRole('button', { name: 'Restart from Reverse Engineering' }),
+    ).toBeDisabled();
   });
 
   // I8 (staging): the failing stage never got a row — the only FAILED row has
