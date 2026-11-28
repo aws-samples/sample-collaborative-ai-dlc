@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
+import { useSpacePermissions } from '@/contexts/SpacePermissionsContext';
 import { stageDurations, useTick } from '@/components/intent/stageStyle';
 import {
   SensorChips,
@@ -114,9 +115,12 @@ function gateNoun(gates: IntentGate[]): string {
   return nouns.size === 1 ? [...nouns][0] : 'decision';
 }
 
-/** "1 question waiting for you" — the one line a stage shows about its open gates. */
-export function openGateLine(gates: IntentGate[]): string {
-  return `${plural(gates.length, gateNoun(gates))} waiting for you`;
+/**
+ * "1 question waiting for you" — the one line a stage shows about its open
+ * gates; "… waiting for an answer" for a reader who cannot answer them.
+ */
+export function openGateLine(gates: IntentGate[], canAnswer = true): string {
+  return `${plural(gates.length, gateNoun(gates))} waiting for ${canAnswer ? 'you' : 'an answer'}`;
 }
 
 // Closed gates are history: a count per outcome ("2 answered · 1 withdrawn"),
@@ -295,7 +299,9 @@ export function StageDetail({
     openArtifactPreview,
     rewindIntent,
     mayControlStage,
+    gateAccess,
   } = useIntent();
+  const { readOnly } = useSpacePermissions();
   useTick(row.state === 'RUNNING' || row.state === 'WAITING_FOR_HUMAN');
 
   const [restartOpen, setRestartOpen] = useState(false);
@@ -384,6 +390,8 @@ export function StageDetail({
   const openGates = stageGates.filter((g) => g.status === 'pending');
   const closedGates = stageGates.filter((g) => g.status !== 'pending');
   const nextGate = openGates[0] ?? null;
+  // The Overview callout's rule: a viewer or a member without the decision cannot answer.
+  const canAnswer = !!nextGate && !readOnly && gateAccess(nextGate).access?.decide === true;
   const workPath = `/space/${projectId}/intent/${intentId}`;
   const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
   const durations = stageDurations(row);
@@ -435,13 +443,13 @@ export function StageDetail({
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-agent-waiting/30 bg-agent-waiting/[0.05] px-2.5 py-2">
           <p className="flex min-w-0 items-center gap-2 text-xs font-medium text-agent-waiting-fg">
             <MessageCircleQuestion aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-            {openGateLine(openGates)}
+            {openGateLine(openGates, canAnswer)}
           </p>
-          <Button asChild size="xs">
+          <Button asChild size="xs" variant={canAnswer ? 'default' : 'outline'}>
             {/* This stage's own gate: with two lanes waiting, the bare Work
                 page would open whichever question it selects first. */}
             <Link to={`${workPath}/review/${nextGate.humanTaskId}`}>
-              {GATE_VERB[nextGate.kind]}
+              {canAnswer ? GATE_VERB[nextGate.kind] : 'View'}
             </Link>
           </Button>
         </div>

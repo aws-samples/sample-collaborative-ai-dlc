@@ -15,6 +15,7 @@ type Globals = {
   stageArtifacts?: unknown[];
   sensorDetail?: unknown;
   stageGates?: unknown[];
+  gateDecide?: boolean;
 };
 const g = globalThis as Globals;
 
@@ -26,6 +27,7 @@ vi.mock('@/contexts/IntentContext', () => ({
     intentId: 'i1',
     detail: g.intentDetail ?? null,
     mayControlStage: () => true,
+    gateAccess: () => ({ access: { edit: true, decide: g.gateDecide ?? true } }),
     stageEdges: g.intentStageEdges ?? [],
     stageRows: [],
     gates: g.stageGates ?? [],
@@ -106,6 +108,7 @@ beforeEach(() => {
   g.stageArtifacts = [];
   g.sensorDetail = null;
   g.stageGates = [];
+  g.gateDecide = true;
 });
 
 describe('StageDetail', () => {
@@ -350,6 +353,34 @@ describe('StageDetail', () => {
   // D6: a stage with four gates used to show four pills ("Question · Answered"
   // twice, "Question · Withdrawn", "Question · Waiting for answer") beside a
   // three-part duration. By default: the one thing to do, and its action.
+  it('reads neutrally, with View, for a reader who may not answer the open question', () => {
+    g.gateDecide = false;
+    g.stageGates = [
+      {
+        humanTaskId: 'q-1',
+        stageInstanceId: 'instance-1',
+        kind: 'question',
+        status: 'pending',
+        prompt: null,
+        options: null,
+      },
+    ];
+    g.intentDetail = { intent: { status: 'WAITING' }, metrics: [] };
+    render(
+      <MemoryRouter>
+        <StageDetail row={{ ...row, state: 'WAITING_FOR_HUMAN' }} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('1 question waiting for an answer')).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for you/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Answer' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View' })).toHaveAttribute(
+      'href',
+      '/space/p1/intent/i1/review/q-1',
+    );
+  });
+
   it('shows one line and one action for the open question, and counts the earlier ones under Details', async () => {
     const DAY = 86_400_000;
     const gate = (humanTaskId: string, status: string) => ({
