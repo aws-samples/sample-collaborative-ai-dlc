@@ -2,6 +2,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+// JSDOM does not fully implement the Pointer Capture API used by Radix UI.
+
+if (!HTMLElement.prototype.releasePointerCapture) {
+  HTMLElement.prototype.releasePointerCapture = () => {};
+}
+
+// JSDOM browser API polyfills for Radix UI Select.
+if (!HTMLElement.prototype.hasPointerCapture) {
+  HTMLElement.prototype.hasPointerCapture = () => false;
+}
+
+if (!HTMLElement.prototype.setPointerCapture) {
+  HTMLElement.prototype.setPointerCapture = () => {};
+}
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  HTMLElement.prototype.scrollIntoView = () => {};
+}
+
 // Stub the git-provider status hook + heavy child widgets so the modal renders
 // in jsdom without network or Radix portal complexity. The GitRepoSelect stub
 // exposes a button that selects one repo, standing in for the provider-backed
@@ -74,6 +93,7 @@ vi.mock('./GitRepoSelect', () => ({
 vi.mock('../services/projects', () => ({
   projectsService: {
     create: vi.fn().mockResolvedValue({ id: 'p1' }),
+    assignEnvironment: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -88,6 +108,27 @@ vi.mock('../services/workflows', () => ({
   },
 }));
 vi.mock('../services/trackers', () => ({ trackersService: { addToProject: vi.fn() } }));
+vi.mock('../services/environments', () => ({
+  environmentsService: {
+    list: vi.fn().mockResolvedValue([
+      {
+        environmentId: 'published-node',
+        name: 'Published Node Environment',
+        status: 'PUBLISHED',
+      },
+      {
+        environmentId: 'updated-python',
+        name: 'Updated Python Environment',
+        status: 'UPDATE_AVAILABLE',
+      },
+      {
+        environmentId: 'draft-environment',
+        name: 'Draft Environment',
+        status: 'DRAFT',
+      },
+    ]),
+  },
+}));
 vi.mock('../services/gitProvider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/gitProvider')>();
   return {
@@ -115,6 +156,7 @@ import { CreateProjectModal } from './CreateProjectModal';
 import { projectsService } from '../services/projects';
 import { sourceControlService } from '../services/sourceControl';
 import { workflowsService } from '../services/workflows';
+import { environmentsService } from '../services/environments';
 import { githubAppService } from '../services/gitProvider';
 
 describe('CreateProjectModal', () => {
@@ -122,7 +164,25 @@ describe('CreateProjectModal', () => {
     vi.clearAllMocks();
     oauthConnected = true;
     vi.mocked(projectsService.create).mockResolvedValue({ id: 'p1' } as never);
+    vi.mocked(projectsService.assignEnvironment).mockResolvedValue(undefined as never);
     vi.mocked(projectsService.delete).mockResolvedValue(undefined as never);
+    vi.mocked(environmentsService.list).mockResolvedValue([
+      {
+        environmentId: 'published-node',
+        name: 'Published Node Environment',
+        status: 'PUBLISHED',
+      },
+      {
+        environmentId: 'updated-python',
+        name: 'Updated Python Environment',
+        status: 'UPDATE_AVAILABLE',
+      },
+      {
+        environmentId: 'draft-environment',
+        name: 'Draft Environment',
+        status: 'DRAFT',
+      },
+    ] as never);
     vi.mocked(sourceControlService.bind).mockResolvedValue({
       ready: true,
       repositories: [],
@@ -149,6 +209,7 @@ describe('CreateProjectModal', () => {
   it('loads the workflow catalog on mount (no v2 opt-in needed)', async () => {
     await renderModal(<CreateProjectModal onClose={() => {}} onCreated={() => {}} />);
     expect(workflowsService.list).toHaveBeenCalledTimes(1);
+    expect(environmentsService.list).toHaveBeenCalledWith(true);
   });
 
   it('always submits kind v2 with the selected workflow', async () => {
@@ -164,7 +225,9 @@ describe('CreateProjectModal', () => {
     // Step 2: pick a repo via the stubbed selector → proceed.
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    // Step 3: the canonical aidlc-v2 workflow is auto-selected once loaded.
+    // Step 3: confirm source-control details and continue to space details.
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    // Step 4: the canonical aidlc-v2 workflow is auto-selected once loaded.
     const createBtn = await screen.findByRole('button', { name: 'Create Space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
     await user.click(createBtn);
@@ -182,8 +245,42 @@ describe('CreateProjectModal', () => {
     expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
       github: { authType: 'github-app' },
     });
+    // No explicit environment choice means the backend owns default selection.
+    expect(projectsService.assignEnvironment).not.toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows only published environments and assigns one only when explicitly selected', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const createButton = await screen.findByRole('button', { name: 'Create Space' });
+    const environmentSelect = screen.getAllByRole('combobox')[0];
+
+    await user.pointer([
+      { keys: '[MouseLeft>]', target: environmentSelect },
+      { keys: '[/MouseLeft]' },
+    ]);
+    expect(
+      await screen.findByRole('option', { name: 'Published Node Environment' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Updated Python Environment' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Draft Environment' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: 'Published Node Environment' }));
+    await waitFor(() => expect(createButton).toBeEnabled());
+    await user.click(createButton);
+
+    await waitFor(() =>
+      expect(projectsService.assignEnvironment).toHaveBeenCalledWith('p1', 'published-node'),
+    );
   });
 
   it('requires explicit confirmation before delegating OAuth', async () => {
@@ -198,14 +295,17 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
 
-    const createButton = screen.getByRole('button', { name: 'Create Space' });
-    expect(createButton).toBeDisabled();
+    const nextButton = screen.getByRole('button', { name: 'Next' });
+    expect(nextButton).toBeDisabled();
     await user.click(
       screen.getByRole('checkbox', {
         name: /I confirm that this space may use my connected identity/,
       }),
     );
-    expect(createButton).toBeEnabled();
+    expect(nextButton).toBeEnabled();
+    await user.click(nextButton);
+    const createButton = await screen.findByRole('button', { name: 'Create Space' });
+    await waitFor(() => expect(createButton).toBeEnabled());
     await user.click(createButton);
 
     await waitFor(() =>
@@ -228,6 +328,7 @@ describe('CreateProjectModal', () => {
     await waitFor(() => expect(nextButton).toBeEnabled());
     await user.click(nextButton);
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
     const createBtn = await screen.findByRole('button', { name: 'Create Space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
@@ -269,6 +370,7 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(await screen.findByRole('button', { name: 'Create Space' }));
 
     // The project survives unbound; the launch guard blocks repository-backed
@@ -277,7 +379,7 @@ describe('CreateProjectModal', () => {
     expect(projectsService.delete).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
-  it('connects CodeCommit through a verified IAM role and binds with the role and external id', async () => {
+  it('connects CodeCommit through a verified IAM role without exposing the external id', async () => {
     oauthConnected = false;
     const user = userEvent.setup();
     const onCreated = vi.fn();
@@ -295,6 +397,7 @@ describe('CreateProjectModal', () => {
 
     // Step 2 lists the repositories the role returned (ARN ids).
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
     const createBtn = await screen.findByRole('button', { name: 'Create Space' });
     await waitFor(() => expect(createBtn).toBeEnabled());

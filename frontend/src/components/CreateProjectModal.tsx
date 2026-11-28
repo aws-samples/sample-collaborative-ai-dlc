@@ -9,6 +9,7 @@ import { CodeCommitConnectForm, type CodeCommitConnectResult } from './CodeCommi
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
+import { environmentsService, type ManagedEnvironment } from '../services/environments';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
@@ -34,6 +35,8 @@ interface Props {
   initialProvider?: GitProvider | '';
 }
 
+// Short name for space naming: the last path segment for owner/repo ids,
+// or the repository name for a CodeCommit ARN.
 const repoShortName = (fullName: string) =>
   (fullName.startsWith('arn:') ? fullName.split(':').pop() : fullName.split('/').pop()) || '';
 
@@ -58,12 +61,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     error: gitStatusError,
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
-  
+
   const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
     defaultAuthTypeFor(initialProvider),
   );
+  // Whether the platform GitHub App is configured; null means still loading.
   const [appConfigured, setAppConfigured] = useState<boolean | null>(null);
   const [delegationConfirmed, setDelegationConfirmed] = useState(false);
+  // CodeCommit's verified role and repository list are reused for binding.
   const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +76,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   useEffect(() => {
     if (formData.gitProvider !== 'github') return;
     let cancelled = false;
+    setAppConfigured(null);
     githubAppService
       .getStatus()
       .then(({ configured }) => {
@@ -90,10 +96,50 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     }
   }, [appConfigured, sourceControlAuthType]);
 
+  // Every new space uses a v2 workflow; the workflow catalog loads on mount.
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
   const [v2Loading, setV2Loading] = useState(false);
   const [v2Error, setV2Error] = useState<string | null>(null);
+
+  // A blank environment selection intentionally leaves assignment to the
+  // backend default configured for the account (see PR #619).
+  const [environments, setEnvironments] = useState<ManagedEnvironment[]>([]);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState('');
+  const [environmentLoading, setEnvironmentLoading] = useState(false);
+  const [environmentError, setEnvironmentError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEnvironmentLoading(true);
+    setEnvironmentError(null);
+
+    environmentsService
+      .list(true)
+      .then((result) => {
+        if (cancelled) return;
+        // The published-only endpoint may include environments with newer
+        // updates available; both statuses still have a published revision.
+        setEnvironments(
+          result.filter(
+            (environment) =>
+              environment.status === 'PUBLISHED' || environment.status === 'UPDATE_AVAILABLE',
+          ),
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setEnvironmentError(err instanceof Error ? err.message : 'Failed to load environments');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setEnvironmentLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,6 +185,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
 
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
+    setAppConfigured(null);
     setSourceControlAuthType(defaultAuthTypeFor(provider));
     setCodecommit(null);
     setSelectedRepos([]);
@@ -146,6 +193,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     setDelegationConfirmed(false);
   };
 
+  // App and OAuth authentication can expose different repositories, so reset picks.
   const handleAuthTypeChange = (authType: SourceControlAuthType) => {
     setSourceControlAuthType(authType);
     setDelegationConfirmed(false);
@@ -158,38 +206,77 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     applyPrimaryRepo(repoFullName);
   };
 
+  const canProceedStep1 = formData.gitProvider
+    ? sourceControlAuthType === 'github-app'
+      ? appConfigured === true
+      : sourceControlAuthType === 'codecommit-role'
+        ? codecommit !== null
+        : Boolean(gitStatus?.connected)
+    : false;
+  const canProceedStep2 = selectedRepos.length > 0;
+  const canProceedStep3 = !sourceControlAuthType.endsWith('-oauth') || delegationConfirmed;
+  const repoCount = selectedRepos.length;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedRepos.length > 0 && !selectedRepos.includes(primaryRepo)) {
-      setError('Select exactly one primary repository.');
+    setError(null);
+
+    // Repeat the wizard's step guards at submission time so an accidental
+    // form submission cannot bypass provider, repository, or OAuth checks.
+    if (!canProceedStep1) {
+      setError('Connect and verify the selected git provider before creating the space.');
       return;
     }
+    if (!canProceedStep2 || !primaryRepo || !selectedRepos.includes(primaryRepo)) {
+      setError('Select at least one repository and designate a primary repository.');
+      return;
+    }
+    if (!canProceedStep3) {
+      setError('Confirm OAuth delegation before creating the space.');
+      return;
+    }
+    if (!formData.name.trim()) {
+      setError('Enter a name for the space.');
+      return;
+    }
+    if (!workflowId) {
+      setError('Select a workflow for the space.');
+      return;
+    }
+
     setSubmitting(true);
-    setError(null);
     try {
       const gitProvider = formData.gitProvider;
-      if (!gitProvider) {
-        setError('Select a git provider.');
-        setSubmitting(false);
-        return;
-      }
-      if (!workflowId) {
-        setError('Select a workflow for the space.');
-        setSubmitting(false);
-        return;
-      }
+      if (!gitProvider) return;
       const repos = selectedRepos.map((url) => ({
         url,
         role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
       }));
       const input: CreateProjectInput = {
         ...formData,
+        name: formData.name.trim(),
         gitProvider,
         repos,
         kind: 'v2',
         workflowId,
       };
+      // A failed source-control bind leaves the project unbound; the backend launch guard
+      // prevents repository-backed work until an owner completes the binding.
       const project = await projectsService.create(input);
+
+      // Only make an explicit assignment when the user selected an
+      // environment. Otherwise the backend applies the configured default.
+      if (selectedEnvironmentId) {
+        try {
+          await projectsService.assignEnvironment(project.id, selectedEnvironmentId);
+        } catch (environmentAssignmentError) {
+          console.error(
+            'Environment assignment failed; project created with the backend default:',
+            environmentAssignmentError,
+          );
+        }
+      }
+
       try {
         await sourceControlService.bind(project.id, {
           [gitProvider]: {
@@ -228,19 +315,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     }
   };
 
-  const canProceedStep1 = formData.gitProvider
-    ? sourceControlAuthType === 'github-app'
-      ? appConfigured === true
-      : sourceControlAuthType === 'codecommit-role'
-        ? codecommit !== null
-        : gitStatus?.connected
-    : false;
-  const canProceedStep2 = selectedRepos.length > 0;
-  const canProceedStep3 = !sourceControlAuthType.endsWith('-oauth') || delegationConfirmed;
-  const repoCount = selectedRepos.length;
-
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-2xl w-full mx-4">
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
           Create New Space
@@ -485,6 +561,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             )}
             <div className="flex justify-end gap-2 mt-6">
               <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
                 onClick={() => setStep(1)}
                 className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
               >
@@ -504,7 +588,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         {/* Step 3: Source Control */}
         {step === 3 && formData.gitProvider && (
           <div>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Source Control & Tracker</h3>
+            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">
+              Source Control & Tracker
+            </h3>
             <div className="mb-4 space-y-3 rounded border p-3 bg-gray-50/50 dark:bg-gray-900/50">
               <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                 Project source control
@@ -531,12 +617,59 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                   repositories.
                 </label>
               )}
+              <div className="border-t dark:border-gray-700 pt-3">
+                <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400 mb-2">
+                  Repositories
+                </p>
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  {repoCount > 1 ? 'Primary repository: ' : 'Repository: '}
+                  {formData.gitRepo}
+                </p>
+                {repoCount > 1 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    +{repoCount - 1} additional repositor{repoCount - 1 === 1 ? 'y' : 'ies'}
+                  </p>
+                )}
+              </div>
+              {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
+                <label className="flex items-start gap-2 border-t dark:border-gray-700 pt-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.issueIntegrationEnabled ?? false}
+                    onChange={(event) =>
+                      setFormData((previous) => ({
+                        ...previous,
+                        issueIntegrationEnabled: event.target.checked,
+                      }))
+                    }
+                    className="mt-0.5"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    <span className="font-medium">
+                      Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
+                      integration
+                    </span>
+                    <span className="block text-xs text-gray-500 dark:text-gray-400">
+                      Browse issues on the space page and start intents from them.
+                      {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
+                    </span>
+                  </span>
+                </label>
+              )}
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 Every repository is verified before the space is available.
               </p>
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
                 onClick={() => setStep(2)}
                 className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
               >
@@ -572,50 +705,44 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             </div>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {repoCount > 1 ? 'Primary Repository' : 'Repository'}
+                Environment
               </label>
-              <input
-                type="text"
-                value={formData.gitRepo}
-                className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"
-                disabled
-              />
-              {repoCount > 1 && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  +{repoCount - 1} additional repositor{repoCount - 1 === 1 ? 'y' : 'ies'}
+              <Select
+                value={selectedEnvironmentId || '__default_environment__'}
+                onValueChange={(value) =>
+                  setSelectedEnvironmentId(value === '__default_environment__' ? '' : value)
+                }
+                disabled={submitting || environmentLoading}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={
+                      environmentLoading ? 'Loading environments…' : 'Use default environment'
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__default_environment__">Use default environment</SelectItem>
+                  {environments.map((environment) => (
+                    <SelectItem key={environment.environmentId} value={environment.environmentId}>
+                      {environment.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {environmentError && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                  {environmentError} You can still use the default environment.
                 </p>
               )}
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Leave this set to the default to use the environment configured for your account.
+              </p>
             </div>
-
-            {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
-              <div className="mb-4">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.issueIntegrationEnabled ?? false}
-                    onChange={(e) =>
-                      setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })
-                    }
-                    className="mt-0.5"
-                    disabled={submitting}
-                  />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium">
-                      Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
-                      integration
-                    </span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      Browse issues on the space page and start intents from them.
-                      {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
-                    </span>
-                  </span>
-                </label>
-              </div>
-            )}
 
             <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
               <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-                AI-DLC v2 settings
+                Workflow Settings
               </p>
               {v2Error && <p className="text-xs text-red-600 dark:text-red-400">{v2Error}</p>}
               <div>
@@ -642,6 +769,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                disabled={submitting}
+              >
+                Cancel
+              </button>
               <button
                 type="button"
                 onClick={() => setStep(3)}
