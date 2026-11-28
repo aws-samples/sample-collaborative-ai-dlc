@@ -17,6 +17,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Compass } from 'lucide-react';
 import { buildUnitBranchItems, type UnitBranchItem } from '@/components/intent/CodeSection';
 import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
+import { Disclosure } from '@/components/ui/disclosure';
+import type { YjsConnection } from '@/hooks/useYjsDocument';
 
 // Map a v2 HUMAN# gate to the right editor, keyed by the intent collaboration
 // scope. `question` gates render the structured QuestionEditor; approval and
@@ -42,9 +44,22 @@ export interface GateCardProps {
   intentId: string;
   userName: string;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
+  /** Live-collaboration state owned by a parent card (see QuestionEditor). */
+  connection?: YjsConnection;
+  onRetry?: () => void;
+  hideConnectionAlert?: boolean;
 }
 
-export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
+export function GateCard({
+  gate,
+  projectId,
+  intentId,
+  userName,
+  onAnswer,
+  connection,
+  onRetry,
+  hideConnectionAlert,
+}: GateCardProps) {
   const navigate = useNavigate();
   const { readOnly: spaceReadOnly, role } = useSpacePermissions();
   const {
@@ -142,7 +157,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               {stageArtifacts.length === 1 ? '' : 's'}. Review them and approve or request changes.
             </p>
             {gate.loopBackReason && (
-              <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+              <p className="mt-1 text-xs text-warning-fg">
                 The agent recommends revising the generated code: {gate.loopBackReason}
                 {gate.loopBackStatus !== 'offered' && gate.loopBackNote
                   ? ` ${gate.loopBackNote}`
@@ -153,7 +168,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
           {stageArtifacts.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {stageArtifacts.map((a) => (
-                <Badge key={a.id} variant="secondary" className="text-[11px]">
+                <Badge key={a.id} variant="secondary" size="sm">
                   {a.title || a.id}
                 </Badge>
               ))}
@@ -247,7 +262,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
         <CardContent className="space-y-2 py-3">
           {notice}
           {gate.unitSlug && (
-            <Badge variant="outline" className="px-1.5 py-0 text-[9px] font-normal">
+            <Badge variant="outline" size="sm" className="font-normal">
               unit {gate.unitSlug}
             </Badge>
           )}
@@ -262,7 +277,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             <div className="space-y-1 rounded-md border border-dashed px-3 py-2">
               <Label
                 htmlFor={`gate-feedback-${gate.humanTaskId}`}
-                className="text-[11px] font-medium text-muted-foreground"
+                className="text-2xs font-medium text-muted-foreground"
               >
                 Request-changes feedback (optional)
               </Label>
@@ -317,8 +332,9 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
     );
   }
 
+  const noteId = `gate-note-${gate.humanTaskId}`;
   return (
-    <div>
+    <div className="space-y-2">
       {notice}
       <QuestionEditor
         canEdit={!cannotEdit}
@@ -327,29 +343,42 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
         references={references}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
+        connection={connection}
+        onRetry={onRetry}
+        hideConnectionAlert={hideConnectionAlert}
         onAnswer={(structuredAnswer) =>
           onAnswer(gate, {
             answer: structuredAnswer,
             ...(steering.trim() ? { steering: steering.trim() } : {}),
           })
         }
+        extra={
+          // Optional course correction delivered WITH the answer — collapsed so
+          // the primary path (answer → submit) stays unambiguous.
+          <Disclosure
+            variant="inline"
+            defaultOpen={steering.length > 0}
+            title={
+              <span className="inline-flex items-center gap-1.5">
+                <Compass aria-hidden="true" className="size-3.5" />
+                Add a note to the agent (optional)
+              </span>
+            }
+            className="block"
+          >
+            <Textarea
+              disabled={readOnly}
+              id={noteId}
+              aria-label="Note to the agent"
+              value={steering}
+              onChange={(e) => setSteering(e.target.value)}
+              placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."
+              rows={2}
+              className="bg-background text-xs"
+            />
+          </Disclosure>
+        }
       />
-      {/* Optional course correction delivered WITH the answer — collapsed so
-          the primary path (answer → submit) stays unambiguous. */}
-      <details open className="mt-1.5 rounded-md border border-dashed px-3 py-2">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-          <Compass className="h-3 w-3" />
-          Add a note to the agent (optional)
-        </summary>
-        <Textarea
-          disabled={readOnly}
-          value={steering}
-          onChange={(e) => setSteering(e.target.value)}
-          placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."
-          rows={2}
-          className="mt-1.5 text-xs"
-        />
-      </details>
     </div>
   );
 }

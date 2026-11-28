@@ -138,7 +138,7 @@ export function DiscussionThread({
       {unread.length > 0 && (
         <div ref={dividerRef} className="flex items-center gap-2 px-3 py-1.5">
           <div className="h-px flex-1 bg-destructive/40" />
-          <span className="text-[10px] font-medium text-destructive/80 uppercase">New</span>
+          <span className="text-2xs font-medium text-destructive/80 uppercase">New</span>
           <div className="h-px flex-1 bg-destructive/40" />
         </div>
       )}
@@ -153,14 +153,14 @@ export function DiscussionThread({
             <div className="min-w-0 flex-1">
               {!saved && <div className="text-sm whitespace-pre-wrap break-words">{p.content}</div>}
               {p.status === 'sending' ? (
-                <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                <span className="text-2xs text-muted-foreground inline-flex items-center gap-1">
                   <Loader2 className="h-2.5 w-2.5 animate-spin" />
                   {saved ? 'asking Quorum…' : 'sending…'}
                 </span>
               ) : (
                 <button
                   type="button"
-                  className="text-[10px] text-destructive inline-flex items-center gap-1 hover:underline"
+                  className="text-2xs text-destructive inline-flex items-center gap-1 hover:underline"
                   onClick={() => onRetry(p.id)}
                 >
                   <AlertCircle className="h-2.5 w-2.5" />
@@ -174,7 +174,7 @@ export function DiscussionThread({
       })}
 
       {typingUsers.length > 0 && (
-        <p className="px-3 pt-1 text-[10px] text-muted-foreground italic">
+        <p className="px-3 pt-1 text-2xs text-muted-foreground italic">
           {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing…
         </p>
       )}

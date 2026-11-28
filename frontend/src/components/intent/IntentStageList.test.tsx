@@ -48,6 +48,7 @@ vi.mock('@/contexts/IntentContext', () => ({
     },
     rewindIntent: mocks.rewindIntent,
     mayControlStage: () => true,
+    gateAccess: () => ({ access: { edit: true, decide: true } }),
     focusOutput: vi.fn(),
     openArtifactPreview: vi.fn(),
   }),

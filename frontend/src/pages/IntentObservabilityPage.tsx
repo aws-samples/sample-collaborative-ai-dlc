@@ -556,8 +556,8 @@ function IntentOverview() {
           links={{
             details: workPath,
             compose: `${workPath}/compose`,
-            gate: (gate) =>
-              gate.kind === 'validation' ? `${workPath}/review/${gate.humanTaskId}` : workPath,
+            // The Work page's review route shows this very gate, whatever its kind.
+            gate: (gate) => `${workPath}/review/${gate.humanTaskId}`,
           }}
           // GateCard's rule: a viewer or a member without the decision cannot answer.
           canAnswer={(gate) => !readOnly && gateAccess(gate).access?.decide === true}

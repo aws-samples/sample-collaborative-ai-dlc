@@ -43,7 +43,7 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
           </div>
         ) : (
           <div
-            className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-semibold text-white"
+            className="h-6 w-6 rounded-full flex items-center justify-center text-2xs font-semibold text-white"
             style={{ backgroundColor: color }}
             title={group.authorName}
           >
@@ -56,12 +56,12 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
           <span className={cn('text-xs font-medium truncate', isSelf && 'text-primary')}>
             {group.authorName}
           </span>
-          <span className="text-[10px] text-muted-foreground shrink-0">
+          <span className="text-2xs text-muted-foreground shrink-0">
             {relativeTime(first.createdAt)}
           </span>
         </div>
         {isAgent && (first.requestedByName || first.command) && (
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             requested by {first.requestedByName || 'unknown'}
             {first.command ? ` · ${first.command}` : ''}
           </p>
@@ -72,7 +72,7 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
               <div key={m.id} className="text-xs italic text-muted-foreground">
                 {m.content}
                 {m.redactedAt && (
-                  <span className="not-italic text-[10px]"> · {relativeTime(m.redactedAt)}</span>
+                  <span className="not-italic text-2xs"> · {relativeTime(m.redactedAt)}</span>
                 )}
               </div>
             ) : (
@@ -90,7 +90,7 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
                 >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                   {isAgent && m.assistStatus === 'running' && (
-                    <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <p className="mt-1 flex items-center gap-1 text-2xs text-muted-foreground">
                       <Loader2 className="h-2.5 w-2.5 animate-spin" />
                       running
                     </p>
@@ -98,7 +98,7 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
                   {isAgent && m.assistStatus === 'failed' && m.requestId && onAssistRetry && (
                     <button
                       type="button"
-                      className="mt-1 inline-flex items-center gap-1 text-[10px] text-destructive hover:underline"
+                      className="mt-1 inline-flex items-center gap-1 text-2xs text-destructive hover:underline"
                       onClick={() => onAssistRetry(m.id)}
                     >
                       <AlertCircle className="h-2.5 w-2.5" />

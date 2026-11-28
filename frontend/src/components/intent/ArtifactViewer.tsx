@@ -16,6 +16,7 @@ import { rendersAsHtml } from '@/components/intent/ArtifactHtmlFrame';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
+import { sentenceCaseSlug } from '@/lib/timelineEvents';
 
 // V2 artifact card, modeled on v1's ArtifactCard visual language
 // (type-colored left border) but fed by the intent detail DTO. Artifacts are
@@ -70,14 +71,14 @@ export function ArtifactViewer({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               {artifact.artifactType && (
-                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60">
-                  {artifact.artifactType}
+                <span className="text-2xs font-medium text-muted-foreground">
+                  {sentenceCaseSlug(artifact.artifactType)}
                 </span>
               )}
               {superseded && (
                 <Badge
                   variant="outline"
-                  className="bg-muted px-1.5 py-0 text-[10px] text-muted-foreground"
+                  className="bg-muted px-1.5 py-0 text-2xs text-muted-foreground"
                   title="Superseded by a rewind — the re-run will update or replace it"
                 >
                   superseded

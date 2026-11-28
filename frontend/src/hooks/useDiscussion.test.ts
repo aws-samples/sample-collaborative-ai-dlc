@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook } from '@/test/query';
 import * as Y from 'yjs';
 import { discussionsService } from '../services/discussions';
 import type { DiscussionMessage, DiscussionScope } from '../services/discussions';

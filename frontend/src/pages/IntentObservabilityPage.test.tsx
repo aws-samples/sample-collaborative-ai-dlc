@@ -779,7 +779,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     expect(screen.queryByText(question)).not.toBeInTheDocument();
     expect(screen.queryByText(/Intent Capture · waiting/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('link', { name: `Answer: ${question}` }));
-    expect(await screen.findByTestId('intent-workbench')).toBeInTheDocument();
+    expect(await screen.findByTestId('review-page')).toBeInTheDocument();
   });
 
   it('O3: I3 — two open gates give one line and one link, to the oldest', async () => {
@@ -813,7 +813,7 @@ describe('IntentObservabilityPage — outcome callout (answer first)', () => {
     const links = screen.getAllByRole('link', { name: /^Answer: / });
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAccessibleName('Answer: Which pilot teams are in scope for the MVP?');
-    expect(links[0]).toHaveAttribute('href', '/space/p1/intent/i1');
+    expect(links[0]).toHaveAttribute('href', '/space/p1/intent/i1/review/gate-2');
     expect(screen.queryByText(/Open workbench/)).not.toBeInTheDocument();
   });
 
@@ -1626,9 +1626,10 @@ describe('IntentObservabilityPage — readers who cannot answer', () => {
       expect(await screen.findByText('1 question waiting for an answer')).toBeInTheDocument();
       expect(screen.queryByText(/needs your answer/)).toBeNull();
       expect(screen.queryByRole('link', { name: /^Answer/ })).toBeNull();
+      // Opens this question, not whichever one the Work page would pick.
       expect(screen.getByRole('link', { name: 'View: Which DB?' })).toHaveAttribute(
         'href',
-        '/space/p1/intent/i1',
+        '/space/p1/intent/i1/review/gate-1',
       );
     });
 
@@ -1648,7 +1649,10 @@ describe('IntentObservabilityPage — readers who cannot answer', () => {
       renderPage();
 
       expect(await screen.findByText('1 question needs your answer')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Answer: Which DB?' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Answer: Which DB?' })).toHaveAttribute(
+        'href',
+        '/space/p1/intent/i1/review/gate-1',
+      );
     });
   });
 });

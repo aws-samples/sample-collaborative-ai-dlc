@@ -44,6 +44,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'P', userRole: 'owner' } }),
+  getCachedIntentSummary: () => undefined,
 }));
 
 vi.mock('@/services/stageResponsibilities', () => ({
@@ -164,7 +165,7 @@ const reviewDetail = (gateOver: Record<string, unknown>) => ({
 const openReview = async () => {
   renderAt();
   await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
-  expect(await screen.findByText('Review: build-and-test')).toBeInTheDocument();
+  expect(await screen.findByText('Review: Build and Test')).toBeInTheDocument();
 };
 
 beforeEach(() => {
@@ -212,12 +213,16 @@ describe('the loop-back option on a stage review gate', () => {
       }),
     );
     await openReview();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
+    // Nothing is sent until the dialog's own action is taken.
+    expect(answerGate).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByRole('button', { name: 'Send back and re-run' }));
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', GATE_ID, {
       answer: { decision: 'loop-back', feedback: '' },
       status: 'rejected',
     });
+    expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 
@@ -229,15 +234,16 @@ describe('the loop-back option on a stage review gate', () => {
       }),
     );
     await openReview();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
-    const [message] = confirmSpy.mock.calls[0];
-    expect(message).toContain('Send this work back to code-generation?');
-    expect(message).toContain('code-generation and this stage re-run from scratch');
-    expect(message).toContain('approvals and reviews will be invalidated');
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Send this work back to code-generation?',
+    });
+    expect(dialog).toHaveTextContent('code-generation and this stage re-run from scratch');
+    expect(dialog).toHaveTextContent('approvals and reviews will be invalidated');
     // Declining sends nothing.
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(answerGate).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
   });
 
   it('withholds the button when the engine offered the option but named no target', async () => {

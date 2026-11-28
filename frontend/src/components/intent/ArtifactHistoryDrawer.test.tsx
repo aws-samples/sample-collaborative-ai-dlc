@@ -1,13 +1,43 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ArtifactVersion, ArtifactVersionSummary, IntentArtifact } from '@/services/intents';
 
 const artifactVersions = vi.fn();
 const artifactVersion = vi.fn();
+const openArtifactPreview = vi.fn();
+const openItemPreview = vi.fn();
 
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: () => ({ projectId: 'p1', intentId: 'i1' }),
+  useIntent: () => ({
+    projectId: 'p1',
+    intentId: 'i1',
+    openArtifactPreview,
+    openItemPreview,
+    detail: {
+      artifacts: [
+        { id: 'architecture', title: 'Architecture', artifactType: 'architecture' },
+        { id: 'design', title: 'Application design', artifactType: 'design' },
+      ],
+    },
+  }),
+}));
+
+vi.mock('@/hooks/useIntentGraph', () => ({
+  useIntentGraph: () => ({
+    derivedItems: [
+      {
+        id: 'item-dec-1',
+        type: 'Decision',
+        label: 'No new Java services',
+        slug: 'dec-no-new-services',
+        graphLayer: 'derived',
+        artifactId: 'design',
+      },
+    ],
+    itemsByArtifact: new Map(),
+    getNeighbors: () => [],
+  }),
 }));
 
 vi.mock('@/services/intents', () => ({
@@ -15,10 +45,6 @@ vi.mock('@/services/intents', () => ({
     artifactVersions: (...args: unknown[]) => artifactVersions(...args),
     artifactVersion: (...args: unknown[]) => artifactVersion(...args),
   },
-}));
-
-vi.mock('@/components/intent/ArtifactMarkdown', () => ({
-  ArtifactMarkdown: ({ content }: { content: string }) => <div>{content}</div>,
 }));
 
 import { ArtifactHistoryDrawer } from './ArtifactHistoryDrawer';
@@ -127,6 +153,95 @@ describe('ArtifactHistoryDrawer', () => {
     expect(await screen.findByText('Archived body')).toBeInTheDocument();
     expect(artifactVersion).toHaveBeenCalledWith('p1', 'i1', 'design', 'design:v1');
     expect(screen.queryByRole('button', { name: /restore|edit/i })).not.toBeInTheDocument();
+  });
+
+  it('shows version dates as relative time, never as a locale date string', async () => {
+    const user = userEvent.setup();
+    const { baseElement } = render(<ArtifactHistoryDrawer artifact={artifact} />);
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    await screen.findByText('Current body');
+
+    expect(baseElement.querySelector('time[datetime="2026-01-02T00:00:00.000Z"]')).not.toBeNull();
+    expect(baseElement.querySelector('time[datetime="2026-01-03T00:00:00.000Z"]')).not.toBeNull();
+    expect(screen.queryByText(/1\/2\/2026|1\/3\/2026/)).not.toBeInTheDocument();
+  });
+
+  it('keeps version ids and hashes behind Technical details', async () => {
+    const user = userEvent.setup();
+    render(<ArtifactHistoryDrawer artifact={artifact} />);
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    await user.click(await screen.findByRole('button', { name: /Generation 1/ }));
+    await screen.findByText('Archived body');
+
+    expect(screen.queryByText('design:v1')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /technical details/i }));
+    expect(screen.getByText('design:v1')).toBeInTheDocument();
+    expect(screen.getByText('abc')).toBeInTheDocument();
+  });
+
+  it('renders [[wiki-links]] as clickable references to documents and items', async () => {
+    const user = userEvent.setup();
+    render(
+      <ArtifactHistoryDrawer
+        artifact={{
+          ...artifact,
+          content: 'Builds on [[architecture]] and [[dec-no-new-services]]; see [[unknown-thing]].',
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    await user.click(await screen.findByRole('link', { name: 'Architecture' }));
+    expect(openArtifactPreview).toHaveBeenCalledWith('architecture');
+    await user.click(screen.getByRole('link', { name: 'No new Java services' }));
+    expect(openItemPreview).toHaveBeenCalledWith('item-dec-1');
+    expect(screen.getByText(/unknown-thing/)).toBeInTheDocument();
+  });
+
+  it('renders a structured YAML block as a readable list instead of raw code', async () => {
+    const user = userEvent.setup();
+    const content = [
+      '## Overview',
+      '',
+      'Decisions recorded for the badge.',
+      '',
+      '```yaml',
+      'decisions:',
+      '  - id: dec-no-new-services',
+      "    title: 'No new Java services or controllers'",
+      '    status: accepted',
+      "    context: 'The badge needs cart item count data: read it from the model.'",
+      '    tags: [cart, badge]',
+      '    consequences:',
+      "      - 'Minimal blast radius'",
+      "      - 'No new API surface'",
+      '  - id: dec-layout-fragment-placement',
+      "    title: 'Place badge markup in the shared layout fragment'",
+      '    status: proposed',
+      '```',
+      '',
+      'Trailing prose.',
+    ].join('\n');
+    render(<ArtifactHistoryDrawer artifact={{ ...artifact, content }} />);
+
+    await user.click(screen.getByRole('button', { name: 'History for Application design' }));
+    expect(await screen.findByText('Decisions recorded for the badge.')).toBeInTheDocument();
+    expect(screen.getByText('Trailing prose.')).toBeInTheDocument();
+
+    expect(screen.queryByText(/- id: dec-no-new-services/)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Decisions \(2\)/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'No new Java services or controllers' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('accepted')).toBeInTheDocument();
+    expect(
+      screen.getByText('The badge needs cart item count data: read it from the model.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Minimal blast radius')).toBeInTheDocument();
+    expect(screen.getByText('cart, badge')).toBeInTheDocument();
+    expect(screen.getByText('Context')).toBeInTheDocument();
   });
 
   it('shows the current body as loading until it arrives', async () => {

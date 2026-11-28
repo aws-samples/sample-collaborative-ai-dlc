@@ -209,7 +209,7 @@ export function DiscussionPanel() {
             <ArrowLeft className="h-3 w-3" />
           </Button>
           {discussion && (
-            <Badge variant="outline" className="text-[10px] shrink-0">
+            <Badge variant="outline" className="text-2xs shrink-0">
               {ENTITY_LABELS[discussion.entityType] || discussion.entityType}
             </Badge>
           )}
@@ -276,7 +276,7 @@ export function DiscussionPanel() {
         <>
           {resolved && discussion.resolutionSummary && (
             <div className="border-b bg-muted/50 px-3 py-2">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase">Resolution</p>
+              <p className="text-2xs font-medium text-muted-foreground uppercase">Resolution</p>
               <p className="text-xs">{discussion.resolutionSummary}</p>
             </div>
           )}
@@ -298,7 +298,7 @@ export function DiscussionPanel() {
             />
           </ScrollArea>
           {!synced && (
-            <p className="px-3 py-1 text-[10px] text-muted-foreground border-t">
+            <p className="px-3 py-1 text-2xs text-muted-foreground border-t">
               Connecting live sync…
             </p>
           )}

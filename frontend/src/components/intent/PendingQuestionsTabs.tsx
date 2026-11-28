@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useId } from 'react';
 import { FileQuestion, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { IntentGate } from '@/services/intents';
@@ -8,10 +8,30 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
 const MAX_VISIBLE_TABS = 5;
+
+/** Structured sub-questions in a gate; approval/review/validation gates count as one. */
+export function gateQuestionCount(gate: IntentGate): number {
+  if (gate.kind !== 'question' || !gate.questions) return 1;
+  try {
+    const parsed: unknown = JSON.parse(gate.questions);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed.length : 1;
+  } catch {
+    return 1;
+  }
+}
+
+// No count: the tabs show how many there are, each card its own "Q1 / 2".
+function QuestionsHeading({ id }: { id?: string }) {
+  return (
+    <h2 id={id} className="flex items-center gap-2 text-sm font-semibold text-foreground">
+      <FileQuestion aria-hidden="true" className="size-4 text-agent-waiting-fg" />
+      Questions for you
+    </h2>
+  );
+}
 
 export function gateTabLabel(gate: IntentGate): string {
   if (gate.prompt) return gate.prompt;
@@ -31,7 +51,13 @@ export function gateTabLabel(gate: IntentGate): string {
 
 interface PendingQuestionsTabsProps {
   gates: IntentGate[];
+  /**
+   * The selected question, owned by the page (it defaults to the run's
+   * pending question). An id that is not pending (or null) shows the first
+   * question.
+   */
   activeGateId: string | null;
+  onSelectGate: (humanTaskId: string) => void;
   renderGateCard: (gate: IntentGate) => React.ReactNode;
   /** Short scan context per tab (stage name, unit lane) — null hides the prefix. */
   gateContext?: (gate: IntentGate) => string | null;
@@ -39,44 +65,32 @@ interface PendingQuestionsTabsProps {
 
 const OVERFLOW_TRIGGER_ID = 'gate-tabs-overflow-trigger';
 
+/** DOM id of the selected gate's card. */
+const gateCardId = (humanTaskId: string) => `gate-card-${humanTaskId}`;
+
 export function PendingQuestionsTabs({
   gates,
   activeGateId,
+  onSelectGate: setSelectedId,
   renderGateCard,
   gateContext,
 }: PendingQuestionsTabsProps) {
-  const [selectedId, setSelectedId] = useState<string>(
-    () => activeGateId ?? gates[0]?.humanTaskId ?? '',
-  );
-
-  // Stable string signature for gate-set identity (avoids object/Set deps).
-  // NUL delimiter — cannot appear in task ids, so splits are always exact.
-  const gateIdSig = gates.map((g) => g.humanTaskId).join('\u0000');
-
-  useEffect(() => {
-    setSelectedId((current) => {
-      const ids = gateIdSig.split('\u0000');
-      if (ids.includes(current)) return current;
-      if (activeGateId && ids.includes(activeGateId)) return activeGateId;
-      return ids[0] ?? '';
-    });
-  }, [activeGateId, gateIdSig]);
-
-  const selectedGate = gates.find((g) => g.humanTaskId === selectedId) ?? gates[0] ?? null;
+  const headingId = useId();
+  const selectedGate = gates.find((g) => g.humanTaskId === activeGateId) ?? gates[0] ?? null;
 
   if (!selectedGate) return null;
+  const selectedId = selectedGate.humanTaskId;
+
+  const heading = <QuestionsHeading id={headingId} />;
+  const regionProps = { role: 'region' as const, 'aria-label': 'Pending questions' };
 
   if (gates.length === 1) {
     return (
-      <div role="region" aria-label="Pending questions" className="space-y-2">
-        <div className="flex items-center gap-2">
-          <FileQuestion className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
-          <Badge variant="secondary" className="h-4 px-1 text-[9px]">
-            1
-          </Badge>
+      <div {...regionProps} className="space-y-2">
+        {heading}
+        <div id={gateCardId(selectedGate.humanTaskId)} className="scroll-mt-4">
+          {renderGateCard(selectedGate)}
         </div>
-        {renderGateCard(selectedGate)}
       </div>
     );
   }
@@ -86,14 +100,8 @@ export function PendingQuestionsTabs({
   const overflowGates = needsOverflow ? gates.filter((g) => !visibleGates.includes(g)) : [];
 
   return (
-    <div role="region" aria-label="Pending questions" className="space-y-2">
-      <div className="flex items-center gap-2">
-        <FileQuestion className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Questions for you</span>
-        <Badge variant="secondary" className="h-4 px-1 text-[9px]">
-          {gates.length}
-        </Badge>
-      </div>
+    <div {...regionProps} className="space-y-2">
+      {heading}
 
       <div
         role="tablist"
@@ -119,14 +127,16 @@ export function PendingQuestionsTabs({
                   ? 'bg-background text-foreground shadow-sm border'
                   : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
               )}
+              title={gateTabLabel(gate)}
               onClick={() => setSelectedId(gate.humanTaskId)}
               onKeyDown={(e) =>
                 handleTabKeyboard(e, visibleGates, selectedId, setSelectedId, needsOverflow)
               }
             >
               {context && (
-                <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                <span className="shrink-0 text-2xs font-medium text-muted-foreground">
                   {context}
+                  <span aria-hidden="true"> ·</span>
                 </span>
               )}
               <span className="truncate">{gateTabLabel(gate)}</span>
@@ -164,8 +174,9 @@ export function PendingQuestionsTabs({
                     className="max-w-[280px] gap-1.5 text-xs"
                   >
                     {context && (
-                      <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <span className="shrink-0 text-2xs font-medium text-muted-foreground">
                         {context}
+                        <span aria-hidden="true"> ·</span>
                       </span>
                     )}
                     <span className="truncate">{gateTabLabel(gate)}</span>
@@ -183,7 +194,9 @@ export function PendingQuestionsTabs({
         aria-labelledby={`gate-tab-${selectedId}`}
         data-testid={`gate-panel-${selectedId}`}
       >
-        {renderGateCard(selectedGate)}
+        <div id={gateCardId(selectedGate.humanTaskId)} className="scroll-mt-4">
+          {renderGateCard(selectedGate)}
+        </div>
       </div>
     </div>
   );

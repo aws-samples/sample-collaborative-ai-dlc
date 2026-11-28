@@ -22,6 +22,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'P', userRole: 'owner' } }),
+  getCachedIntentSummary: () => undefined,
 }));
 
 const get = vi.fn();

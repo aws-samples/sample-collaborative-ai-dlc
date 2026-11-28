@@ -34,7 +34,20 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { EmptyState } from '@/components/ui/empty-state';
 import { cn } from '@/lib/utils';
+import { displayStageName } from '@/lib/displayNames';
+import { useReturnFocus } from '@/components/intent/useReturnFocus';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -42,6 +55,7 @@ import {
   Ban,
   ChevronRight,
   FileText,
+  Inbox,
   Layers,
   SearchAlert,
   SearchCheck,
@@ -140,9 +154,7 @@ function ReviewStat({
   );
   const body = (
     <>
-      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
+      <div className="text-2xs font-medium text-muted-foreground">{label}</div>
       <div className="mt-1 text-sm font-semibold">{value}</div>
     </>
   );
@@ -182,7 +194,7 @@ export function StageReviewPanel({
 }: StageReviewPanelProps) {
   const { readOnly: spaceReadOnly, role } = useSpacePermissions();
   const [submitting, setSubmitting] = useState(false);
-  const { stageNameOf, openItemPreview, reload, gateAccess } = useIntent();
+  const { openItemPreview, reload, gateAccess } = useIntent();
   const permission = gateAccess(gate);
   const readOnly = spaceReadOnly || !permission.access?.decide;
   const cannotEdit = spaceReadOnly || !permission.access?.edit;
@@ -235,7 +247,6 @@ export function StageReviewPanel({
     (artifact) => artifact.summaryGist || (artifact.summaryClaims?.length ?? 0) > 0,
   );
   const pending = gate.status === 'pending';
-  const reviewTitle = `Review ${stage?.stageId ?? gate.humanTaskId}`;
   const {
     feedback,
     feedbackText,
@@ -281,15 +292,17 @@ export function StageReviewPanel({
   // gate that always stays human, and only while the intent is still gated — so,
   // like every other button here, it is driven by the option list, never assumed.
   const canGrantAutonomy = role === 'owner' && gateOptions.includes('grant-autonomy');
-  const confirmGrantAutonomy = () =>
-    window.confirm(
-      [
-        'Approve this stage and run the remaining construction stages without stopping?',
-        'Later construction stages will be approved automatically while their checks are clean.',
-        'A failure, a plan approval, a blocking finding, or a reviewer that is not ready still stops and asks you.',
-        'This applies for the rest of the intent, rewinds included, until the intent is cancelled.',
-      ].join('\n'),
-    );
+  // Decisions confirmed in the AlertDialog (never a browser confirm); only the
+  // dialog's action submits.
+  const [confirming, setConfirming] = useState<
+    'loop-back' | 'grant-autonomy' | 'override-and-approve' | null
+  >(null);
+  const returnFocusAfterConfirm = useReturnFocus(confirming !== null);
+  // Zero artifacts and zero items: one sentence replaces the zero tiles, and
+  // approving stays possible but is no longer the call to action.
+  const nothingToReview = artifacts.length === 0 && visibleDerivedItems.length === 0;
+  const stageDisplayName = displayStageName(stage?.stageId ?? gate.humanTaskId);
+  const reviewTitle = `Review ${stageDisplayName}`;
   const submit = async (
     decision:
       | 'approve'
@@ -325,41 +338,54 @@ export function StageReviewPanel({
     <Card className="border-agent-waiting/30">
       <CardHeader className="space-y-3">
         <div>
-          <CardTitle className="text-base">
-            Review: {stageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
-          </CardTitle>
+          <CardTitle className="text-base">Review: {stageDisplayName}</CardTitle>
           <StagePermissionNotice {...permission} review />
           <p className="mt-1 text-sm text-muted-foreground">
             Review what the agent produced and approve or send it back with feedback.
           </p>
         </div>
-        <div className="grid gap-2 sm:grid-cols-4">
-          <ReviewStat
-            label="Artifacts"
-            value={artifacts.length}
-            onClick={artifacts.length > 0 ? () => revealSection('full-artifacts') : undefined}
+        {nothingToReview ? (
+          <EmptyState
+            size="section"
+            icon={Inbox}
+            title="Nothing to review"
+            description={`No documents or extracted items to review for ${stageDisplayName}.`}
           />
-          <ReviewStat
-            label="Identified items"
-            value={visibleDerivedItems.length}
-            onClick={
-              visibleDerivedItems.length > 0 ? () => revealSection('identified-items') : undefined
-            }
-          />
-          <ReviewStat
-            label="Reviewer verdict"
-            value={latestReviewerVerdict ?? 'None'}
-            tone={latestReviewerNeedsAttention ? 'warn' : 'ok'}
-            onClick={reviewerRuns.length > 0 ? () => revealSection('reviewer-findings') : undefined}
-          />
-          <ReviewStat
-            label="Status"
-            value={
-              pending ? 'Waiting for review' : gate.status === 'approved' ? 'Approved' : gate.status
-            }
-            tone={pending ? 'warn' : 'ok'}
-          />
-        </div>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-4">
+            <ReviewStat
+              label="Artifacts"
+              value={artifacts.length}
+              onClick={artifacts.length > 0 ? () => revealSection('full-artifacts') : undefined}
+            />
+            <ReviewStat
+              label="Identified items"
+              value={visibleDerivedItems.length}
+              onClick={
+                visibleDerivedItems.length > 0 ? () => revealSection('identified-items') : undefined
+              }
+            />
+            <ReviewStat
+              label="Reviewer verdict"
+              value={latestReviewerVerdict ?? 'Not reviewed yet'}
+              tone={latestReviewerNeedsAttention ? 'warn' : 'ok'}
+              onClick={
+                reviewerRuns.length > 0 ? () => revealSection('reviewer-findings') : undefined
+              }
+            />
+            <ReviewStat
+              label="Status"
+              value={
+                pending
+                  ? 'Waiting for review'
+                  : gate.status === 'approved'
+                    ? 'Approved'
+                    : gate.status
+              }
+              tone={pending ? 'warn' : 'ok'}
+            />
+          </div>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         <Accordion
@@ -374,7 +400,7 @@ export function StageReviewPanel({
                 <Sparkles className="h-4 w-4 text-agent-running" />
                 <span>At a glance</span>
                 {artifactSummaries.length > 0 && (
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                  <Badge variant="secondary" className="h-5 px-1.5 text-2xs">
                     Agent Summary
                   </Badge>
                 )}
@@ -437,7 +463,7 @@ export function StageReviewPanel({
                   <Badge
                     variant={latestReviewerNeedsAttention ? 'outline' : 'secondary'}
                     className={cn(
-                      'h-5 px-1.5 text-[10px]',
+                      'h-5 px-1.5 text-2xs',
                       latestReviewerNeedsAttention && 'text-destructive',
                     )}
                   >
@@ -521,9 +547,6 @@ export function StageReviewPanel({
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
                   <span>Artifacts</span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {artifacts.length}
-                  </Badge>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3">
@@ -548,9 +571,6 @@ export function StageReviewPanel({
                 <div className="flex items-center gap-2">
                   <Layers className="h-4 w-4 text-muted-foreground" />
                   <span>Identified items</span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {visibleDerivedItems.length}
-                  </Badge>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3">
@@ -606,7 +626,7 @@ export function StageReviewPanel({
                   {Array.from(remoteUsers.values()).map((u, i) => (
                     <div
                       key={i}
-                      className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white"
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-2xs text-white"
                       style={{ backgroundColor: u.color }}
                     >
                       {u.name?.charAt(0)}
@@ -643,13 +663,13 @@ export function StageReviewPanel({
                   <SelectItem value="next">
                     {gate.nextStageId !== undefined
                       ? gate.nextStageId
-                        ? `Continue to ${gate.nextStageId}`
+                        ? `Continue to ${displayStageName(gate.nextStageId)}`
                         : 'Complete workflow'
                       : 'Continue to the next stage'}
                   </SelectItem>
                   {skipTargets.map((t) => (
                     <SelectItem key={t} value={t}>
-                      Skip ahead to {t}
+                      Skip ahead to {displayStageName(t)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -744,16 +764,7 @@ export function StageReviewPanel({
                   <Button
                     variant="outline"
                     disabled={readOnly || submitting || !synced}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Send this work back to ${loopBackTarget}? ${loopBackTarget} and this stage re-run from scratch with your feedback, and their earlier plan approvals and reviews will be invalidated.`,
-                        )
-                      ) {
-                        return;
-                      }
-                      void submit('loop-back');
-                    }}
+                    onClick={() => setConfirming('loop-back')}
                   >
                     Send back to {loopBackTarget}
                   </Button>
@@ -762,10 +773,7 @@ export function StageReviewPanel({
                   <Button
                     variant="outline"
                     disabled={spaceReadOnly || submitting || !synced}
-                    onClick={() => {
-                      if (!confirmGrantAutonomy()) return;
-                      void submit('grant-autonomy');
-                    }}
+                    onClick={() => setConfirming('grant-autonomy')}
                   >
                     Approve and continue autonomously
                   </Button>
@@ -774,31 +782,23 @@ export function StageReviewPanel({
                   <Button
                     variant="outline"
                     disabled={spaceReadOnly || submitting || !overrideReason.trim()}
-                    onClick={() => {
-                      // An override records the human's name against the blocking
-                      // findings it waives. Naming the count in the confirmation is
-                      // the difference between "I clicked the other button" and a
-                      // decision the audit trail can stand on.
-                      if (
-                        !window.confirm(
-                          `Accept ${blockingFindingCount} blocking finding(s) and approve? Your name and the finding codes are recorded with this approval.`,
-                        )
-                      ) {
-                        return;
-                      }
-                      void submit('override-and-approve');
-                    }}
+                    onClick={() => setConfirming('override-and-approve')}
                   >
                     Accept {blockingFindingCount} blocking finding(s) &amp; approve
                   </Button>
                 )}
                 {canApprove && (
-                  <Button disabled={readOnly || submitting} onClick={() => submit('approve')}>
+                  <Button
+                    variant={nothingToReview ? 'outline' : 'default'}
+                    disabled={readOnly || submitting}
+                    loading={submitting}
+                    onClick={() => submit('approve')}
+                  >
                     {skipTo
-                      ? `Approve & skip to ${skipTo}`
+                      ? `Approve — skip to ${displayStageName(skipTo)}`
                       : gate.nextStageId !== undefined
                         ? gate.nextStageId
-                          ? `Approve — continue to ${gate.nextStageId}`
+                          ? `Approve — continue to ${displayStageName(gate.nextStageId)}`
                           : 'Approve — complete workflow'
                         : 'Approve stage'}
                   </Button>
@@ -807,7 +807,7 @@ export function StageReviewPanel({
             )}
           </div>
           {pending && loopBackTarget && (
-            <p className="text-xs text-amber-600 dark:text-amber-500">
+            <p className="text-xs text-warning-fg">
               The agent recommends revising the generated code
               {loopBackReason ? `: ${loopBackReason}` : ''}. Sending this back re-runs{' '}
               {loopBackTarget} and this stage from scratch, with your feedback, and their earlier
@@ -815,13 +815,13 @@ export function StageReviewPanel({
             </p>
           )}
           {pending && loopBackWithheld && (
-            <p className="text-xs text-amber-600 dark:text-amber-500">
+            <p className="text-xs text-warning-fg">
               The agent recommends revising the generated code
               {loopBackReason ? `: ${loopBackReason}` : ''}.{loopBackNote ? ` ${loopBackNote}` : ''}
             </p>
           )}
           {pending && skipTo && (
-            <p className="text-xs text-amber-600 dark:text-amber-500">
+            <p className="text-xs text-warning-fg">
               Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;
               downstream stages treat their outputs as absent by design. {skipTo} itself runs in
               full. You can re-add a skipped stage later by rewinding to it.
@@ -829,6 +829,89 @@ export function StageReviewPanel({
           )}
         </section>
       </CardContent>
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(null);
+        }}
+      >
+        <AlertDialogContent onCloseAutoFocus={returnFocusAfterConfirm}>
+          {confirming === 'loop-back' && loopBackTarget && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Send this work back to {loopBackTarget}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {loopBackTarget} and this stage re-run from scratch with your feedback. Their
+                  earlier plan approvals and reviews will be invalidated.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirming(null);
+                    void submit('loop-back');
+                  }}
+                >
+                  Send back and re-run
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+          {confirming === 'grant-autonomy' && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Approve this stage and run the remaining construction stages without stopping?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  Later construction stages will be approved automatically while their checks are
+                  clean. A failure, a plan approval, a blocking finding, or a reviewer that is not
+                  ready still stops and asks you. This applies for the rest of the intent, rewinds
+                  included, until the intent is cancelled.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    setConfirming(null);
+                    void submit('grant-autonomy');
+                  }}
+                >
+                  Approve and run autonomously
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+          {confirming === 'override-and-approve' && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Accept {blockingFindingCount} blocking{' '}
+                  {blockingFindingCount === 1 ? 'finding' : 'findings'} and approve?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  Your name and the finding codes are recorded with this approval, together with the
+                  reason you gave.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    setConfirming(null);
+                    void submit('override-and-approve');
+                  }}
+                >
+                  Accept findings and approve
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

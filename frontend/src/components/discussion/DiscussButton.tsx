@@ -52,7 +52,7 @@ export function DiscussButton({ entityType, entityId, entityTitle, className }: 
         >
           <MessageSquare className={cn('h-3 w-3', (unread > 0 || ongoing) && 'text-primary')} />
           {unread > 0 ? (
-            <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-primary text-primary-foreground text-[8px] font-semibold flex items-center justify-center">
+            <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 rounded-full bg-primary text-primary-foreground text-2xs font-semibold flex items-center justify-center">
               {unread > 99 ? '99+' : unread}
             </span>
           ) : ongoing ? (

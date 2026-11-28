@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { PendingQuestionsTabs, gateTabLabel } from './PendingQuestionsTabs';
 import type { IntentGate } from '@/services/intents';
@@ -24,15 +25,22 @@ const makeGates = (count: number): IntentGate[] =>
     }),
   );
 
-const renderTabs = (gates: IntentGate[], over: Record<string, unknown> = {}) =>
-  render(
+// The page owns the selection; this harness plays that part.
+function Tabs({ gates, ...over }: { gates: IntentGate[] } & Record<string, unknown>) {
+  const [active, setActive] = useState<string | null>(gates[0]?.humanTaskId ?? null);
+  return (
     <PendingQuestionsTabs
       gates={gates}
-      activeGateId={gates[0]?.humanTaskId ?? null}
+      activeGateId={active}
+      onSelectGate={setActive}
       renderGateCard={(g) => <div data-testid={`card-${g.humanTaskId}`} />}
       {...over}
-    />,
+    />
   );
+}
+
+const renderTabs = (gates: IntentGate[], over: Record<string, unknown> = {}) =>
+  render(<Tabs gates={gates} {...over} />);
 
 describe('gateTabLabel', () => {
   it('prefers the prompt', () => {
@@ -99,5 +107,23 @@ describe('PendingQuestionsTabs — keyboard navigation', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Question 3?' }));
     await userEvent.keyboard('{ArrowRight}');
     expect(screen.getByRole('tab', { name: 'Question 1?' })).toHaveFocus();
+  });
+});
+
+describe('PendingQuestionsTabs — heading', () => {
+  // D6: the heading carries no number; the tabs and each card's "Q1 / 2" do.
+  it('names the section without counting questions or gates', () => {
+    renderTabs([
+      gate({
+        humanTaskId: 'h1',
+        questions: JSON.stringify([
+          { text: 'A?', type: 'single', options: [] },
+          { text: 'B?', type: 'single', options: [] },
+        ]),
+      }),
+      gate({ humanTaskId: 'h2', kind: 'approval', questions: null, prompt: 'Approve the plan' }),
+    ]);
+    expect(screen.getByRole('heading', { name: 'Questions for you' })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
   });
 });

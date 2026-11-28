@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@/test/query';
+import { render, screen, waitFor, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
-import { ApiError } from '@/services/api';
+import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
 const projectCacheMock = vi.hoisted(() => ({
   role: 'owner' as 'owner' | 'member',
   name: 'Bookstore Tracker',
+  // Space list row for the header placeholder while the detail loads.
+  summary: null as Record<string, unknown> | null,
 }));
 
 // Heavy leaf components are stubbed to simple markers — these tests exercise
@@ -61,6 +63,16 @@ vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({
     project: { name: projectCacheMock.name, userRole: projectCacheMock.role },
   }),
+  getCachedIntentSummary: () => projectCacheMock.summary ?? undefined,
+}));
+
+// Version pinning (issue #482) is off unless a test turns it on; the real
+// service would hit the network and leave it off anyway.
+const sharedChannels = vi.fn();
+const pinningOff = () => sharedChannels.mockReset().mockResolvedValue({ pinningEnabled: false });
+pinningOff();
+vi.mock('@/services/aidlcReleases', () => ({
+  aidlcReleasesService: { sharedChannels: (...a: unknown[]) => sharedChannels(...a) },
 }));
 
 const getResponsibilities = vi.fn();
@@ -73,6 +85,9 @@ const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
 const exportWorkflow = vi.fn();
+const cancel = vi.fn();
+const resume = vi.fn();
+const del = vi.fn();
 const writeText = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
@@ -85,6 +100,10 @@ vi.mock('@/services/intents', () => ({
     answerGate: (...a: unknown[]) => answerGate(...a),
     repair: (...a: unknown[]) => repair(...a),
     exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
+    cancel: (...a: unknown[]) => cancel(...a),
+    resume: (...a: unknown[]) => resume(...a),
+    delete: (...a: unknown[]) => del(...a),
+    outputs: () => Promise.resolve({ outputs: [], cursor: 0, more: false }),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
     graph: (...a: unknown[]) => graph(...a),
@@ -98,7 +117,18 @@ vi.mock('@/services/workflows', () => ({
 }));
 
 import IntentView from './IntentView';
-import { IntentProvider, clearIntentCache } from '@/contexts/IntentContext';
+import { ApiError } from '@/services/api';
+import { IntentProvider, clearIntentCache, useIntent } from '@/contexts/IntentContext';
+
+// Exposes which stage output the page last asked the activity panel to show.
+function ActivityTabProbe() {
+  const { agentFocus } = useIntent();
+  return <span data-testid="activity-tab">{agentFocus?.key ?? ''}</span>;
+}
+
+// Several suites use the same synthetic p1/i1 identity but supply different
+// graph fixtures. Reset the shared graph cache as well as IntentContext state.
+beforeEach(() => invalidateIntentGraph('p1', 'i1'));
 
 const renderAt = (initialEntry = '/space/p1/intent/i1') =>
   render(
@@ -109,6 +139,7 @@ const renderAt = (initialEntry = '/space/p1/intent/i1') =>
           element={
             <IntentProvider>
               <IntentView />
+              <ActivityTabProbe />
             </IntentProvider>
           }
         />
@@ -121,10 +152,17 @@ const renderAt = (initialEntry = '/space/p1/intent/i1') =>
           }
         />
         <Route path="/space/:projectId/settings" element={<div data-testid="space-settings" />} />
+        <Route path="/space/:projectId" element={<div data-testid="space-page" />} />
         <Route path="/account/settings" element={<div data-testid="account-settings" />} />
       </Routes>
     </MemoryRouter>,
   );
+
+const openExportDialog = async () => {
+  await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: /^Download workspace/ }));
+  expect(await screen.findByText('Continue outside Collaborative AI-DLC?')).toBeInTheDocument();
+};
 
 const baseDetail = (over: Record<string, unknown> = {}) => ({
   intent: {
@@ -181,8 +219,13 @@ describe('IntentView', () => {
       value: { writeText },
     });
     writeText.mockReset().mockResolvedValue(undefined);
+    window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+    window.HTMLElement.prototype.setPointerCapture = vi.fn();
+    window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     projectCacheMock.role = 'owner';
     projectCacheMock.name = 'Bookstore Tracker';
+    projectCacheMock.summary = null;
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -232,6 +275,32 @@ describe('IntentView', () => {
     },
   );
 
+  it('R3-1: a 404 reads "This intent no longer exists" with a way back, no Retry, no connection copy', async () => {
+    get.mockRejectedValue(new ApiError(404, 'Intent not found'));
+    renderAt();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'This intent no longer exists' }),
+    ).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Back to space' })).toHaveAttribute(
+      'href',
+      '/space/p1',
+    );
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.queryByText(/check your connection/i)).toBeNull();
+  });
+
+  it('R3-1: a network failure keeps the connection copy and a Retry', async () => {
+    get.mockRejectedValueOnce(new Error('Temporary network failure'));
+    renderAt();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: "Couldn't load this intent" }),
+    ).toBeVisible();
+    expect(screen.getByText(/check your connection/i)).toBeVisible();
+    get.mockResolvedValueOnce(baseDetail({ status: 'WAITING' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+
   it('DRAFT redirects to the collaborative compose page (one canonical draft UI)', async () => {
     get.mockResolvedValue(baseDetail());
     render(
@@ -273,12 +342,15 @@ describe('IntentView', () => {
       );
       renderAt();
 
-      expect(
-        await screen.findByText(
-          /The Space Kiro credential pinned to this run is no longer available/,
-        ),
-      ).toBeInTheDocument();
+      const title = await screen.findByText(/agent credential (ran out of quota|was available)/);
+      expect(title.closest('[data-slot="intent-outcome"]')).toHaveAttribute(
+        'data-outcome',
+        'failed',
+      );
       expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/The Space Kiro credential pinned to this run is no longer available/),
+      ).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
       expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
@@ -323,11 +395,34 @@ describe('IntentView', () => {
 
       renderAt();
 
-      await userEvent.click(await screen.findByRole('button', { name: 'Retry Units Generation' }));
+      expect(screen.queryByRole('link', { name: 'Run recovery details' })).not.toBeInTheDocument();
+      // A rewind re-runs agents (and spends again), so the callout confirms
+      // it first; nothing is called until the dialog is confirmed.
+      await userEvent.click(
+        await screen.findByRole('button', { name: 'Restart from Units Generation' }),
+      );
+      const dialog = await screen.findByRole('alertdialog', {
+        name: 'Restart from Units Generation?',
+      });
+      expect(rewind).not.toHaveBeenCalled();
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: 'Restart from this stage' }),
+      );
       expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'units-generation' });
       expect(start).not.toHaveBeenCalled();
     },
   );
+
+  // Full restart from the callout: "Restart workflow" → confirm in the
+  // AlertDialog → `intents.start`. Never a rewind.
+  const confirmRestartWorkflow = async () => {
+    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Restart this workflow from the beginning?',
+    });
+    expect(start).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Restart workflow' }));
+  };
 
   it('restarts when the only failed stage row is no longer in the compiled plan', async () => {
     compiled.mockResolvedValue({
@@ -356,7 +451,8 @@ describe('IntentView', () => {
 
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    await confirmRestartWorkflow();
+    expect(screen.queryByRole('button', { name: /^Restart from/ })).toBeNull();
     expect(start).toHaveBeenCalledWith('p1', 'i1');
     expect(rewind).not.toHaveBeenCalled();
   });
@@ -372,7 +468,7 @@ describe('IntentView', () => {
 
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    await confirmRestartWorkflow();
     expect(start).toHaveBeenCalledWith('p1', 'i1');
     expect(rewind).not.toHaveBeenCalled();
   });
@@ -396,7 +492,8 @@ describe('IntentView', () => {
 
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    await confirmRestartWorkflow();
+    expect(screen.queryByRole('button', { name: /^Restart from/ })).toBeNull();
     expect(start).toHaveBeenCalledWith('p1', 'i1');
     expect(rewind).not.toHaveBeenCalled();
   });
@@ -416,26 +513,36 @@ describe('IntentView', () => {
     renderAt();
 
     expect((await screen.findAllByText('My intent')).length).toBeGreaterThan(0);
-    expect(screen.queryByText('Run stalled — never started')).toBeNull();
+    expect(screen.queryByText(/never picked up/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
+    // The header pill says it is starting; nothing else is stacked above the work.
+    expect(screen.getAllByText(/^Starting/).length).toBeGreaterThan(0);
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
   });
 
-  it('calls an unclaimed CREATED hand-off stalled after two minutes', async () => {
+  it('calls an unclaimed CREATED hand-off stalled past the shared stall threshold', async () => {
     get.mockResolvedValue(
       baseDetail({
         status: 'CREATED',
-        updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        updatedAt: new Date(Date.now() - 45 * 60_000).toISOString(),
         orchestratorStartedAt: null,
       }),
     );
 
     renderAt();
 
-    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        'Stalled before the first stage — never picked up, no activity for 45 min',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Run recovery details' })).not.toBeInTheDocument();
+    expect(screen.getByText('Stalled · no activity for 45 min')).toBeInTheDocument();
+    expect(document.querySelector('[data-pulse]')).toBeNull();
   });
 
-  it('calls a claimed run stalled once the init callback window has passed', async () => {
+  it('calls a claimed run stalled while preparing its workspace once the init callback window has passed', async () => {
     const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
     get.mockResolvedValue(
       baseDetail({
@@ -447,7 +554,9 @@ describe('IntentView', () => {
 
     renderAt();
 
-    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
+    expect(
+      await screen.findByText(/^Stalled while preparing the workspace — no activity for 3 h/),
+    ).toBeInTheDocument();
   });
 
   it('renders one QuestionEditor for the active gate (exclusive expansion)', async () => {
@@ -605,6 +714,18 @@ describe('IntentView', () => {
     expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
   });
 
+  it('N11: keeps Reshape in the menu on a running intent, disabled with the same reason as the Overview', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(baseDetail({ status: 'RUNNING', constructionAutonomyMode: 'gated' }));
+    renderAt();
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    await user.click(screen.getByLabelText('Intent actions'));
+    const item = screen.getByRole('menuitem', { name: /Reshape remaining stages/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveTextContent('Only while the run is waiting or has failed');
+    expect(screen.getByRole('menuitem', { name: /Download workspace/ })).toBeInTheDocument();
+  });
+
   it('switches from intent configuration to reshape', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue(
@@ -680,13 +801,14 @@ describe('IntentView', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows a visible native export beside Discuss', async () => {
+  it('offers the workspace download from the intent actions menu, not a bare icon', async () => {
     get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
     renderAt();
-    expect(
-      await screen.findByRole('button', { name: 'Download Codex workspace' }),
-    ).toBeInTheDocument();
-    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    await screen.findByRole('heading', { level: 1, name: 'My intent' });
+    expect(screen.queryByRole('button', { name: /Download Codex workspace/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Choose workspace harness' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+    expect(screen.getByRole('menuitem', { name: /^Download workspace/ })).toBeEnabled();
     expect(screen.queryByText('Export')).not.toBeInTheDocument();
   });
 
@@ -695,13 +817,13 @@ describe('IntentView', () => {
     exportWorkflow.mockImplementation(() => new Promise(() => {}));
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Choose workspace harness' }));
-    expect(await screen.findByRole('menuitem', { name: /^Codex/ })).toBeInTheDocument();
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Claude' }));
-    expect(screen.queryByText('Continue outside Collaborative AI-DLC?')).not.toBeInTheDocument();
+    await openExportDialog();
     expect(exportWorkflow).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Download Claude workspace' }));
-    expect(await screen.findByText('Continue outside Collaborative AI-DLC?')).toBeInTheDocument();
+    const harness = screen.getByRole('combobox', { name: 'Agent tool for the workspace' });
+    expect(harness).toHaveTextContent('Codex');
+    await userEvent.click(harness);
+    await userEvent.click(await screen.findByRole('option', { name: 'Claude' }));
+    expect(harness).toHaveTextContent('Claude');
     expect(screen.getByText(/will not be synchronized back to this intent/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
@@ -713,7 +835,7 @@ describe('IntentView', () => {
     exportWorkflow.mockRejectedValue(new Error('{"error":"Workspace export is unavailable"}'));
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await openExportDialog();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Workspace export is unavailable');
@@ -736,7 +858,7 @@ describe('IntentView', () => {
     );
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await openExportDialog();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     const alert = await screen.findByRole('alert');
@@ -769,7 +891,7 @@ describe('IntentView', () => {
       .mockImplementation(() => {});
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await openExportDialog();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     expect(downloadClick).toHaveBeenCalledOnce();
@@ -832,12 +954,8 @@ describe('IntentView', () => {
       .mockImplementation(() => {});
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
-    await userEvent.click(
-      await screen.findByRole('button', {
-        name: 'Download workspace',
-      }),
-    );
+    await openExportDialog();
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     expect(downloadClick).toHaveBeenCalledOnce();
     expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
@@ -903,7 +1021,7 @@ describe('IntentView', () => {
       .mockImplementation(() => {});
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await openExportDialog();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
@@ -965,12 +1083,8 @@ describe('IntentView', () => {
       .mockImplementation(() => {});
     renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Download Claude workspace' }));
-    await userEvent.click(
-      await screen.findByRole('button', {
-        name: 'Download workspace',
-      }),
-    );
+    await openExportDialog();
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
 
     expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
     expect(screen.getByText(/git clone --branch 'aidlc\/intent-1'/)).toBeInTheDocument();
@@ -994,8 +1108,10 @@ describe('IntentView', () => {
   it('shows export disabled while a created intent may still start running', async () => {
     get.mockResolvedValue(baseDetail({ status: 'CREATED', agentCli: 'codex' }));
     renderAt();
-    expect(await screen.findByRole('button', { name: 'Download Codex workspace' })).toBeDisabled();
     await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    const item = screen.getByRole('menuitem', { name: /^Download workspace/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveTextContent('Not available before the workflow starts');
     expect(screen.queryByText('Export')).not.toBeInTheDocument();
   });
 
@@ -1003,26 +1119,11 @@ describe('IntentView', () => {
     get.mockResolvedValue(baseDetail({ status: 'RUNNING', agentCli: 'codex' }));
     renderAt();
 
+    await openExportDialog();
     expect(
-      await screen.findByRole('button', {
-        name: 'Download Codex workspace from latest completed checkpoint',
-      }),
-    ).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Choose workspace harness' })).toBeEnabled();
-    await userEvent.hover(screen.getByTestId('workspace-export-download'));
-    expect(
-      await screen.findByRole('tooltip', {
-        name: 'Download Codex workspace from latest completed checkpoint',
-      }),
-    ).toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole('button', {
-        name: 'Download Codex workspace from latest completed checkpoint',
-      }),
-    );
-    expect(
-      await screen.findByText(/excludes the stage currently in progress/i),
-    ).toBeInTheDocument();
+      screen.getByRole('combobox', { name: 'Agent tool for the workspace' }),
+    ).toHaveTextContent('Codex');
+    expect(screen.getByText(/excludes the stage currently in progress/i)).toBeInTheDocument();
   });
 
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {
@@ -1119,11 +1220,19 @@ describe('IntentView', () => {
 
     renderAt();
 
-    expect(await screen.findByText('Parallel execution needs recovery')).toBeInTheDocument();
+    // Plain language first (R3-10); the engine sentence one action away.
+    expect(await screen.findByText('One parallel unit is stuck')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Repairing keeps the units that already finished, discards the draft/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/section boundary/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Technical details' }));
+    expect(screen.getByText(/replayed from the section boundary/)).toBeInTheDocument();
     expect(screen.getByText('Needs recovery')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Repair execution' }));
-    expect(await screen.findByText('Repair parallel execution')).toBeInTheDocument();
-    await userEvent.click(screen.getAllByRole('button', { name: 'Repair execution' }).at(-1)!);
+    await userEvent.click(screen.getByRole('button', { name: 'Repair units' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Repair the stuck units?' });
+    expect(dialog).toHaveTextContent('Finished units are kept.');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Repair units' }));
     expect(repair).toHaveBeenCalledWith('p1', 'i1');
   });
 
@@ -1157,9 +1266,11 @@ describe('IntentView', () => {
 
     renderAt();
 
-    expect(await screen.findByText('Past questions & corrections')).toBeInTheDocument();
-    expect(screen.queryByText('Parallel execution needs recovery')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Repair execution' })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: /Past questions & corrections/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/parallel unit(s)? (is|are) stuck/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Repair units' })).not.toBeInTheDocument();
   });
 
   it('holds lane repair while a sibling lane is resuming', async () => {
@@ -1169,9 +1280,9 @@ describe('IntentView', () => {
 
     renderAt();
 
-    expect(await screen.findByText('Parallel execution needs recovery')).toBeInTheDocument();
-    expect(screen.getByText(/Another lane is resuming after an answer/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Repair execution' })).toBeDisabled();
+    expect(await screen.findByText('One parallel unit is stuck')).toBeInTheDocument();
+    expect(screen.getByText(/Another unit is restarting after an answer/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Repair units' })).toBeDisabled();
   });
 
   it('renders a review-verdict gate with its options and answers through the gate endpoint', async () => {
@@ -1190,7 +1301,8 @@ describe('IntentView', () => {
     });
     answerGate.mockResolvedValue({});
     renderAt();
-    expect(await screen.findByText('Ship it?')).toBeInTheDocument();
+    const questions = await screen.findByRole('region', { name: 'Pending questions' });
+    expect(within(questions).getByText('Ship it?')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'h3', {
       answer: 'Accept',
@@ -1269,14 +1381,14 @@ describe('IntentView', () => {
     answerGate.mockResolvedValue({});
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
-    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+    expect(await screen.findByText('Review: Stage a')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
     const reviewDiscuss = screen
       .getAllByTestId('discuss')
       .find((b) => b.getAttribute('data-entity') === 'review');
     expect(reviewDiscuss).toBeInTheDocument();
     expect(reviewDiscuss).toHaveAttribute('data-entity-id', 'eg-validation-si-a-0-run1');
-    expect(reviewDiscuss).toHaveAttribute('data-entity-title', 'Review stage-a');
+    expect(reviewDiscuss).toHaveAttribute('data-entity-title', 'Review Stage a');
     const glance = screen.getByRole('button', { name: /At a glance/i });
     expect(glance).toHaveAttribute('aria-expanded', 'true');
     expect(
@@ -1354,7 +1466,7 @@ describe('IntentView', () => {
     });
     graph.mockResolvedValue({ nodes: [], edges: [] });
     renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
-    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+    expect(await screen.findByText('Review: Stage a')).toBeInTheDocument();
 
     // Accordion triggers carry aria-expanded; the empty categories render none.
     const expandable = (label: RegExp) =>
@@ -1430,7 +1542,7 @@ describe('IntentView', () => {
     });
     graph.mockResolvedValue({ nodes: [], edges: [] });
     renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
-    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+    expect(await screen.findByText('Review: Stage a')).toBeInTheDocument();
 
     const trigger = (label: RegExp) =>
       screen.getAllByRole('button', { name: label }).find((b) => b.hasAttribute('aria-expanded'))!;
@@ -1481,7 +1593,7 @@ describe('IntentView', () => {
     const { unmount } = renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(
-      await screen.findByRole('button', { name: 'Approve — continue to stage-b' }),
+      await screen.findByRole('button', { name: 'Approve — continue to Stage B' }),
     ).toBeInTheDocument();
     unmount();
     clearIntentCache();
@@ -1600,7 +1712,7 @@ describe('IntentView', () => {
     });
     renderAt();
     expect(await screen.findByText('Work products')).toBeInTheDocument();
-    const trigger = screen.getByText('Past questions & corrections');
+    const trigger = screen.getByRole('button', { name: /Past questions & corrections/ });
     await userEvent.click(trigger);
     // Expand the question row to see answer details
     await userEvent.click(await screen.findByText('Which provider?'));
@@ -1698,8 +1810,15 @@ describe('IntentView', () => {
     });
 
     renderAt();
-    // Phases and stages render expanded by default, in workflow order.
+    // Phases are the tree's top branches, in workflow order; only the stage
+    // holding the newest document opens by default, so open the other stages.
     expect((await screen.findAllByText('Construction')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Domain Entities Doc')).toBeInTheDocument();
+    for (const trigger of screen
+      .getAllByRole('button', { name: /\d+ documents?$/ })
+      .filter((b) => b.getAttribute('aria-expanded') === 'false')) {
+      await userEvent.click(trigger);
+    }
     expect(await screen.findByText('Code Gen Doc')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
@@ -1796,7 +1915,8 @@ describe('IntentView', () => {
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.getByText('main')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /^PR\b/i });
+    // The Code section's entry (the outcome callout links the same PR as "PR #9 · repo").
+    const link = screen.getByRole('link', { name: 'PR #9 for owner/repo' });
     expect(link).toHaveAttribute('href', 'https://github.com/owner/repo/pull/9');
     expect(link).toHaveTextContent('PR #9');
   });
@@ -1882,7 +2002,8 @@ describe('IntentView — WP7 construction UI', () => {
     answerGate.mockResolvedValue({});
     renderAt();
     // Prompt + lane attribution + every option rendered.
-    expect(await screen.findByText(/Lane failure in section 1/)).toBeInTheDocument();
+    const questions = await screen.findByRole('region', { name: 'Pending questions' });
+    expect(within(questions).getByText(/Lane failure in section 1/)).toBeInTheDocument();
     expect(screen.getByText('unit billing')).toBeInTheDocument();
     const retry = screen.getByRole('button', { name: 'retry' });
     expect(screen.getByRole('button', { name: 'skip' })).toBeInTheDocument();
@@ -2045,6 +2166,11 @@ describe('IntentView — pending questions tabs', () => {
     get.mockResolvedValue(makeGates(6, 'h3'));
     renderAt();
     expect(await screen.findByText('Questions for you')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Review 6 pending actions' })).toBeNull();
+    // The questions are the page: no block above them repeats that they are waiting.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/need your answer/)).toBeNull();
+    expect(document.getElementById('pending-human-gates')).toBeInTheDocument();
     // Only one gate panel is mounted at a time (the selected tab)
     const panel = screen.getByTestId('gate-panel-h3');
     expect(panel.querySelector('[data-testid="question-editor"]')).toBeInTheDocument();
@@ -2129,7 +2255,7 @@ describe('IntentView — compact history section', () => {
       ],
     });
     renderAt();
-    const trigger = await screen.findByText('Past questions & corrections');
+    const trigger = await screen.findByRole('button', { name: /Past questions & corrections/ });
     await userEvent.click(trigger);
     const scopeElements = await screen.findAllByText('Scope?');
     expect(scopeElements.length).toBeGreaterThanOrEqual(1);
@@ -2170,7 +2296,9 @@ describe('IntentView — compact history section', () => {
       ],
     });
     renderAt();
-    await userEvent.click(await screen.findByText('Past questions & corrections'));
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Past questions & corrections/ }),
+    );
     expect(screen.getAllByText('Scope?').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Priority?').length).toBeGreaterThanOrEqual(1);
     expect(
@@ -2221,6 +2349,8 @@ describe('IntentView — provenance tree and absence of rejected UI', () => {
     });
     renderAt();
     expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'View work products' })).toBeNull();
+    expect(document.getElementById('intent-work-products')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /1 doc/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /1 question/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /\d+ code/ })).not.toBeInTheDocument();
@@ -2271,7 +2401,7 @@ describe('IntentView — tabs overflow and roving tabindex', () => {
     await screen.findByText('Questions for you');
     expect(screen.getByTestId('gate-panel-h1')).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText(/more questions/));
-    await userEvent.click(await screen.findByText('Question 8?'));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Question 8\?/ }));
     expect(screen.getByTestId('gate-panel-h8')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Question 8?' })).toBeInTheDocument();
   });
@@ -2452,7 +2582,9 @@ describe('IntentView — provenance tree structure', () => {
       ],
     });
     renderAt();
-    await userEvent.click(await screen.findByText('Past questions & corrections'));
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Past questions & corrections/ }),
+    );
     const row = await screen.findByTestId('history-row-h1');
     const toggleButton = row.querySelector('[aria-expanded]');
     expect(toggleButton?.tagName).toBe('BUTTON');
@@ -2493,6 +2625,11 @@ describe('IntentView — resume after a failed gate callback', () => {
   beforeEach(() => {
     clearIntentCache();
     get.mockReset();
+    projectCacheMock.role = 'owner';
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [],
+    });
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -2527,6 +2664,36 @@ describe('IntentView — resume after a failed gate callback', () => {
     expect(
       await screen.findByText('Your answer was saved but the run did not continue'),
     ).toBeInTheDocument();
+  });
+
+  it('offers it on the answered review page too', async () => {
+    resume.mockReset().mockResolvedValue(undefined);
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+      gates: [answered()],
+    });
+    renderAt('/space/p1/intent/i1/review/h1');
+
+    expect(await screen.findByText('This review is no longer pending')).toBeInTheDocument();
+    expect(screen.getByText('Your answer was saved but the run did not continue')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Resume run' }));
+    expect(resume).toHaveBeenCalledWith('p1', 'i1');
+  });
+
+  // #838: Resume re-sends a decision, so it follows the stage's permissions.
+  it('disables Resume for a member who may not decide the stage', async () => {
+    projectCacheMock.role = 'member';
+    getResponsibilities.mockResolvedValue({
+      stages: [{ stageInstanceId: 'si-1', access: { edit: true, decide: false } }],
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+      gates: [answered()],
+    });
+    renderAt();
+
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Resume run' })).toBeDisabled();
   });
 
   it('does not offer it once the intent is no longer waiting', async () => {
@@ -2609,13 +2776,776 @@ describe('terminal completion diagnostics without terminal recovery', () => {
         screen.queryByRole('button', { name: /Preview recovery|Confirm and continue/ }),
       ).not.toBeInTheDocument();
       expect(screen.queryByText(/units verified integrated/)).toBeNull();
-      if (state === 'unknown') {
-        await userEvent.hover(screen.getByRole('button', { name: 'Completion unverified' }));
-        expect(await screen.findByRole('tooltip')).toHaveTextContent(
-          'The list of planned units is missing.',
-        );
-      }
+      if (state === 'unknown')
+        expect(screen.getByText('The list of planned units is missing.')).toBeVisible();
+      if (state === 'incomplete')
+        expect(screen.getByText('Unfinished units: remaining.')).toBeVisible();
       expect(repair).not.toHaveBeenCalled();
     },
   );
+});
+
+// Audit T4 (P0): the /review/:humanTaskId deep link told the truth about the
+// gate only when it WAS a validation gate. A question gate opened an empty
+// approval form with "Approve stage" live; an empty-but-real review invited a
+// blind approval; a retired task showed a generic "not found".
+describe('IntentView — /review deep link truth (T4)', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    start.mockReset();
+    answerGate.mockReset().mockResolvedValue({});
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  const questionGate = (status: 'pending' | 'answered' = 'pending') => ({
+    humanTaskId: 'q-e8d7011b',
+    stageInstanceId: 'si-feas',
+    unitSlug: null,
+    kind: 'question',
+    status,
+    prompt: null,
+    options: null,
+    questions:
+      '[{"text":"Which payment provider should the MVP target?","type":"single","options":[{"label":"Stripe"},{"label":"Adyen"}]}]',
+    answer: null,
+    answeredBy: status === 'answered' ? 'ada' : null,
+    answeredByName: status === 'answered' ? 'Ada' : null,
+    answeredAt: status === 'answered' ? '2026-03-01T12:00:00Z' : null,
+    createdAt: '2026-03-01T10:00:00Z',
+  });
+
+  const withGate = (gate: Record<string, unknown>, status = 'WAITING') => ({
+    ...baseDetail({
+      status,
+      pendingHumanTaskId: status === 'WAITING' ? (gate.humanTaskId as string) : null,
+    }),
+    stages: [
+      {
+        stageInstanceId: 'si-feas',
+        stageId: 'feasibility',
+        state: status === 'WAITING' ? 'WAITING_FOR_HUMAN' : 'SUCCEEDED',
+        phase: 'inception',
+      },
+    ],
+    gates: [gate],
+  });
+
+  it('renders the question experience, never an approval form, for a question gate', async () => {
+    get.mockResolvedValue(withGate(questionGate()));
+    renderAt('/space/p1/intent/i1/review/q-e8d7011b');
+
+    // The title names the stage, without a count (the card numbers its
+    // questions); the question text belongs to the card (R5-4).
+    expect(
+      await screen.findByRole('heading', { name: 'Feasibility — question' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Which payment provider should the MVP target?')).toBeNull();
+    // The same editor the Work page mounts for pending questions.
+    expect(screen.getByTestId('question-editor')).toHaveAttribute('data-gate', 'q-e8d7011b');
+    expect(
+      screen.getByText(/The agent needs an answer before this stage can continue\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to approve/)).not.toBeInTheDocument();
+    // No approval affordance of any kind.
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /request changes/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Review: /)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to intent' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['approval', 'This stage needs your approval to continue.'],
+    ['review-verdict', 'A reviewer verdict is needed before this stage can continue.'],
+  ])('explains what a pending %s gate needs', async (kind, intro) => {
+    get.mockResolvedValue(
+      withGate({ ...questionGate(), humanTaskId: 'g-1', kind, questions: null, prompt: 'Go?' }),
+    );
+    renderAt('/space/p1/intent/i1/review/g-1');
+
+    expect(await screen.findByText(new RegExp(intro.replace('.', '\\.')))).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to approve/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs an answer/)).not.toBeInTheDocument();
+  });
+
+  it('says a real review has nothing to show and demotes Approve to an outline button', async () => {
+    get.mockResolvedValue(
+      withGate({
+        humanTaskId: 'eg-validation-si-feas-0-run1',
+        stageInstanceId: 'si-feas',
+        unitSlug: null,
+        kind: 'validation',
+        status: 'pending',
+        prompt: 'Review stage feasibility.',
+        options: ['approve', 'request-changes'],
+        questions: null,
+        answer: null,
+        answeredBy: null,
+        answeredAt: null,
+        createdAt: null,
+      }),
+    );
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-feas-0-run1');
+
+    expect(
+      await screen.findByText('No documents or extracted items to review for Feasibility.'),
+    ).toBeInTheDocument();
+    // The zero tiles are gone — the sentence replaces them.
+    expect(screen.queryByText('Identified items')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reviewer verdict')).not.toBeInTheDocument();
+    const approve = screen.getByRole('button', { name: 'Approve stage' });
+    expect(approve).toHaveClass('border-input');
+    expect(approve).not.toHaveClass('bg-primary');
+    // Still available: the action is demoted, not removed.
+    await userEvent.click(approve);
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-feas-0-run1', {
+      answer: { decision: 'approve' },
+      status: 'approved',
+    });
+  });
+
+  it('keeps Approve as the primary action when the review has content', async () => {
+    get.mockResolvedValue({
+      ...withGate({
+        humanTaskId: 'eg-validation-si-feas-0-run1',
+        stageInstanceId: 'si-feas',
+        unitSlug: null,
+        kind: 'validation',
+        status: 'pending',
+        prompt: 'Review stage feasibility.',
+        options: ['approve', 'request-changes'],
+        questions: null,
+        answer: null,
+        answeredBy: null,
+        answeredAt: null,
+        createdAt: null,
+      }),
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'feasibility',
+          title: 'Feasibility study',
+          content: '# Feasibility',
+          summaryGist: null,
+          summaryClaims: [],
+          enrichmentModel: null,
+          createdByStageInstanceId: 'si-feas',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-feas-0-run1');
+
+    expect(await screen.findByRole('button', { name: 'Approve stage' })).toHaveClass('bg-primary');
+    expect(screen.queryByText(/No documents or extracted items/)).not.toBeInTheDocument();
+    expect(screen.getAllByText('Artifacts').length).toBeGreaterThan(0);
+  });
+
+  it('returns to the intent after answering on the review page, not to "no longer pending"', async () => {
+    const pending = withGate({
+      ...questionGate(),
+      humanTaskId: 'g-1',
+      kind: 'approval',
+      questions: null,
+      prompt: 'Go?',
+    });
+    const done = withGate(
+      {
+        ...questionGate('answered'),
+        humanTaskId: 'g-1',
+        kind: 'approval',
+        questions: null,
+        prompt: 'Go?',
+      },
+      'RUNNING',
+    );
+    get.mockResolvedValueOnce(pending).mockResolvedValue(done);
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [
+        { stageInstanceId: 'si-feas', reason: 'unmapped', access: { decide: true, edit: true } },
+      ],
+    });
+    renderAt('/space/p1/intent/i1/review/g-1');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'g-1', expect.anything());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Back to intent' })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText('This review is no longer pending')).not.toBeInTheDocument();
+  });
+
+  it('tells the reader an answered task is no longer pending and links back', async () => {
+    get.mockResolvedValue(withGate(questionGate('answered'), 'RUNNING'));
+    renderAt('/space/p1/intent/i1/review/q-e8d7011b');
+
+    expect(await screen.findByText('This review is no longer pending')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('question-editor')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to intent' })).toBeInTheDocument();
+  });
+
+  it('treats an unknown task id the same way', async () => {
+    get.mockResolvedValue(withGate(questionGate()));
+    renderAt('/space/p1/intent/i1/review/q-does-not-exist');
+
+    expect(await screen.findByText('This review is no longer pending')).toBeInTheDocument();
+    expect(screen.queryByText('Review gate not found')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to intent' })).toBeInTheDocument();
+  });
+});
+
+// Audit W3/W7/O8/X7 + T1/T2/T3/O1 on Work: answer first (outcome callout),
+// one labelled actions menu, no anchor band, no window.confirm, no "live" dot.
+describe('IntentView — Work header, recovery line and actions', () => {
+  const DAY = 24 * 60 * 60_000;
+
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    projectCacheMock.role = 'owner';
+    getResponsibilities.mockReset().mockResolvedValue({
+      unattributedAccess: { decide: true, edit: true },
+      stages: [],
+    });
+    cancel.mockReset();
+    del.mockReset();
+    start.mockReset();
+    rewind.mockReset();
+    answerGate.mockReset();
+    pinningOff();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    projectCacheMock.role = 'owner';
+    projectCacheMock.summary = null;
+    yjsMock.docs.clear();
+  });
+
+  const waitingGate = (id: string, ageDays: number, text = `Question ${id}?`) => ({
+    humanTaskId: id,
+    stageInstanceId: `si-${id}`,
+    status: 'pending',
+    kind: 'question',
+    questions: `[{"text":"${text}","type":"single","options":[{"label":"Yes"}]}]`,
+    createdAt: new Date(Date.now() - ageDays * DAY).toISOString(),
+  });
+
+  it('shows one h1, a status pill with the wait age, and no unlabelled live dot (T2, W7)', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'WAITING',
+        pendingHumanTaskId: 'h1',
+        updatedAt: new Date(Date.now() - 108 * DAY).toISOString(),
+        methodologyRelease: {
+          releaseId: 'rel-1',
+          upstreamVersion: '2.9.0',
+          sourceSha: 'abcdef1234567',
+          closureDigest: 'sha256:0123456789abcdef',
+        },
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-h1',
+          stageId: 'feasibility',
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'inception',
+        },
+      ],
+      gates: [waitingGate('h1', 108)],
+    });
+    renderAt();
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'My intent' })).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByText('Waiting for input · 108 days')).toBeInTheDocument();
+    expect(screen.queryByLabelText('live')).toBeNull();
+    expect(document.querySelector('[data-pulse]')).toBeNull();
+    expect(screen.getByTestId('methodology-release-badge')).toHaveTextContent('AI-DLC 2.9.0');
+    expect(screen.queryByRole('navigation', { name: 'Intent work shortcuts' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /pending action/ })).toBeNull();
+
+    // D4: no outcome block on the Work page. The questions follow the header.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/needs your answer|Parked/)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
+  });
+
+  it('shares the Overview header: back to the space, status pill, scope badge, method version (W2 §4–5)', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'WAITING',
+        pendingHumanTaskId: 'h1',
+        scope: 'mvp-recomposed',
+        methodologyRelease: {
+          releaseId: 'rel-1',
+          upstreamVersion: '2.9.0',
+          sourceSha: 'abcdef1234567',
+          closureDigest: 'sha256:0123456789abcdef',
+        },
+      }),
+      gates: [waitingGate('h1', 3)],
+    });
+    renderAt();
+
+    const header = (await screen.findByRole('heading', { level: 1, name: 'My intent' })).closest(
+      'header',
+    ) as HTMLElement;
+    // The breadcrumb links back to the space; the header does not repeat it (R5-31).
+    expect(within(header).queryByRole('link', { name: 'Bookstore Tracker' })).toBeNull();
+    expect(within(header).getByText('Waiting for input · 3 days')).toBeInTheDocument();
+    expect(within(header).getByLabelText('Scope: MVP Recomposed')).toHaveTextContent(
+      'MVP Recomposed',
+    );
+    expect(within(header).queryByText('mvp-recomposed')).toBeNull();
+    expect(within(header).getByTestId('methodology-release-badge')).toHaveTextContent(
+      'AI-DLC 2.9.0',
+    );
+    expect(within(header).getByRole('button', { name: 'Intent actions' })).toBeInTheDocument();
+  });
+
+  it('keeps the header while the detail loads, from the cached space row', async () => {
+    projectCacheMock.summary = {
+      id: 'i1',
+      title: 'Cached title',
+      status: 'RUNNING',
+      scope: 'bugfix',
+      createdAt: null,
+      updatedAt: new Date().toISOString(),
+      completedAt: null,
+    };
+    get.mockReturnValue(new Promise(() => {}));
+    renderAt();
+
+    const header = screen
+      .getByRole('heading', { level: 1, name: 'Cached title' })
+      .closest('header') as HTMLElement;
+    expect(within(header).getByLabelText('Scope: Bugfix')).toBeInTheDocument();
+  });
+
+  it('shows a terminal pill alone with "how long ago" beside it, never "Failed · 137 days"', async () => {
+    const completedAt = new Date(Date.now() - 137 * DAY).toISOString();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'FAILED',
+        completedAt,
+        failureReason: 'workspace_initialization_failed',
+      }),
+    );
+    renderAt();
+
+    const header = (await screen.findByRole('heading', { level: 1, name: 'My intent' })).closest(
+      'header',
+    ) as HTMLElement;
+    expect(within(header).getByText('Failed')).toBeInTheDocument();
+    const when = within(header).getByText('137 days ago');
+    expect(when.tagName).toBe('TIME');
+    expect(when).toHaveAttribute('dateTime', completedAt);
+    expect(screen.queryByText(/Failed · /)).toBeNull();
+  });
+
+  it('marks a months-old RUNNING run as stalled, without animation or a Cancel it cannot honour (T1)', async () => {
+    const fourMonthsAgo = new Date(Date.now() - 122 * DAY).toISOString();
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'RUNNING',
+        currentStage: 'intent-capture',
+        createdAt: fourMonthsAgo,
+        updatedAt: fourMonthsAgo,
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-ic',
+          stageId: 'intent-capture',
+          state: 'RUNNING',
+          phase: 'inception',
+          startedAt: fourMonthsAgo,
+          updatedAt: fourMonthsAgo,
+        },
+      ],
+      events: [
+        {
+          eventId: 'e1',
+          type: 'v2.stage.running',
+          stageInstanceId: 'si-ic',
+          actor: 'orchestrator',
+          summary: 'Stage intent-capture running',
+          timestamp: fourMonthsAgo,
+        },
+      ],
+    });
+    renderAt();
+
+    expect(await screen.findByText('Stalled · no activity for 4 months')).toBeInTheDocument();
+    expect(document.querySelector('[data-pulse]')).toBeNull();
+    expect(screen.queryByLabelText('live')).toBeNull();
+    // The header pill says it; the engine offers no restart for a running run,
+    // so no block repeats it above the work.
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Restart/ })).toBeNull();
+    expect(
+      screen.queryByText('Setting up workspace (cloning repositories, preparing the run)…'),
+    ).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+    expect(screen.queryByRole('menuitem', { name: 'Cancel run' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Delete intent' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Audit' })).toBeInTheDocument();
+  });
+
+  it('keeps a live pulse for a run with recent activity', async () => {
+    const justNow = new Date().toISOString();
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING', currentStage: 'intent-capture', updatedAt: justNow }),
+      stages: [
+        {
+          stageInstanceId: 'si-ic',
+          stageId: 'intent-capture',
+          state: 'RUNNING',
+          phase: 'inception',
+          startedAt: justNow,
+        },
+      ],
+    });
+    renderAt();
+
+    expect((await screen.findAllByText('Running')).length).toBeGreaterThan(0);
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(document.querySelector('[data-pulse]')).not.toBeNull();
+  });
+
+  it('names the failed stage and the cause in one sentence, with one Restart (T3)', async () => {
+    compiled.mockResolvedValue({
+      graph: {
+        nodes: [
+          { stageId: 'state-init', phasePath: '00', order: 0 },
+          { stageId: 'reverse-engineering', phasePath: '01', order: 1 },
+        ],
+        edges: [],
+      },
+    });
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'FAILED',
+        currentStage: 'reverse-engineering',
+        failureReason: 'stage_failed: reverse-engineering: not_implemented: mode pipeline',
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-init',
+          stageId: 'state-init',
+          state: 'SUCCEEDED',
+          phase: 'initialization',
+        },
+        {
+          stageInstanceId: 'si-re',
+          stageId: 'reverse-engineering',
+          state: 'FAILED',
+          phase: 'inception',
+          runtimeError: 'not_implemented: mode pipeline',
+        },
+      ],
+    });
+    rewind.mockResolvedValue({});
+    renderAt();
+
+    expect(
+      await screen.findByText(
+        'Failed at Reverse Engineering — This stage uses a mode this platform version does not support yet.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+    expect(screen.queryByText('Run failed')).toBeNull();
+    expect(screen.queryByText('mode pipeline')).toBeNull();
+    // One action: restart from the failed stage.
+    expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Restart from Reverse Engineering' }));
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Restart from Reverse Engineering?',
+    });
+    expect(rewind).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Restart from this stage' }));
+    expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'reverse-engineering' });
+  });
+
+  // #838: the recovery line keeps the rule of the failure box it replaces.
+  it('disables the restart for a member who may not decide the failed stage', async () => {
+    projectCacheMock.role = 'member';
+    getResponsibilities.mockResolvedValue({
+      stages: [
+        {
+          stageId: 'reverse-engineering',
+          stageInstanceId: 'si-re',
+          access: { edit: false, decide: false },
+        },
+      ],
+    });
+    compiled.mockResolvedValue({
+      graph: { nodes: [{ stageId: 'reverse-engineering', phasePath: '01', order: 0 }], edges: [] },
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'FAILED', currentStage: 'reverse-engineering' }),
+      stages: [
+        {
+          stageInstanceId: 'si-re',
+          stageId: 'reverse-engineering',
+          state: 'FAILED',
+          phase: 'inception',
+          runtimeError: 'not_implemented: mode pipeline',
+        },
+      ],
+    });
+    renderAt();
+
+    await waitFor(() => expect(getResponsibilities).toHaveBeenCalled());
+    expect(
+      await screen.findByRole('button', { name: 'Restart from Reverse Engineering' }),
+    ).toBeDisabled();
+  });
+
+  // I8 (staging): the failing stage never got a row — the only FAILED row has
+  // no stageId. The pipeline bar must still paint Inception red from the
+  // failure event, the one recovery is "Restart workflow" (the other AI-DLC
+  // version stays in the actions menu), and it confirms before anything is
+  // posted (T3).
+  it('I8: red failed phase from the inferred stage, one Restart, confirmed', async () => {
+    sharedChannels.mockResolvedValue({ pinningEnabled: true });
+    compiled.mockResolvedValue({
+      graph: {
+        nodes: [
+          { stageId: 'state-init', phasePath: '00', order: 0 },
+          { stageId: 'reverse-engineering', phasePath: '01', order: 1 },
+          { stageId: 'requirements-analysis', phasePath: '01', order: 2 },
+        ],
+        edges: [],
+      },
+    });
+    workflowGet.mockResolvedValue({
+      phases: [
+        { path: '00', phaseId: 'initialization', name: 'Initialization' },
+        { path: '01', phaseId: 'inception', name: 'Inception' },
+      ],
+    });
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'FAILED',
+        currentStage: 'state-init',
+        failure: { code: 'not_implemented', message: 'mode pipeline' },
+        failureReason: 'stage_failed: reverse-engineering: not_implemented: mode pipeline',
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-init',
+          stageId: 'state-init',
+          state: 'SUCCEEDED',
+          phase: 'initialization',
+        },
+        { stageInstanceId: null, stageId: null, state: 'FAILED', runtimeError: 'not_implemented' },
+      ],
+      events: [
+        {
+          eventId: 'e-fail',
+          type: 'v2.execution.failed',
+          actor: 'orchestrator',
+          summary: 'stage_failed: reverse-engineering: not_implemented: mode pipeline',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    });
+    start.mockResolvedValue({});
+    renderAt();
+
+    expect(
+      await screen.findByText(
+        'Failed at Reverse Engineering — This stage uses a mode this platform version does not support yet.',
+      ),
+    ).toBeInTheDocument();
+    const inception = await screen.findByRole('button', { name: /^Inception/ });
+    expect(inception).toHaveAttribute('data-state', 'failed');
+    expect(inception).toHaveTextContent('Failed at Reverse Engineering');
+
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Start on another AI-DLC version' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Restart workflow' }));
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Restart this workflow from the beginning?',
+    });
+    expect(dialog).toHaveTextContent(/agents begin working — and spending — again/);
+    expect(start).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep run' }));
+    expect(start).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Restart workflow' }));
+    await userEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Restart workflow',
+      }),
+    );
+    expect(start).toHaveBeenCalledWith('p1', 'i1');
+  });
+
+  // I3 (staging): one pending question (109 d) and a Scope Definition row still
+  // WAITING_FOR_HUMAN since 137 d whose questions were all answered before the
+  // recompose. The page used to stack a block above the question saying
+  // "2 stages are waiting for input" and "Parked with no open question" right
+  // over the open question. It now shows the question, and nothing above it.
+  it('I3: a stage parked beside an open question adds no block above the question', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'WAITING',
+        pendingHumanTaskId: 'q-feas',
+        currentStage: 'feasibility',
+        updatedAt: new Date(Date.now() - 109 * DAY).toISOString(),
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-scope',
+          stageId: 'scope-definition',
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'ideation',
+          parkedAt: new Date(Date.now() - 137 * DAY).toISOString(),
+        },
+        {
+          stageInstanceId: 'si-feas',
+          stageId: 'feasibility',
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'ideation',
+          parkedAt: new Date(Date.now() - 109 * DAY).toISOString(),
+        },
+      ],
+      gates: [
+        {
+          ...waitingGate('q-scope', 137, 'What is in scope?'),
+          stageInstanceId: 'si-scope',
+          status: 'answered',
+        },
+        { ...waitingGate('q-feas', 109, 'Which gateway?'), stageInstanceId: 'si-feas' },
+      ],
+    });
+    renderAt();
+
+    expect(await screen.findByRole('region', { name: 'Pending questions' })).toBeInTheDocument();
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    expect(screen.queryByText(/stages are waiting|Parked|no open question/)).toBeNull();
+    // Exactly one answerable card: the open question.
+    expect(document.getElementById('gate-card-q-feas')).toBeInTheDocument();
+    expect(document.getElementById('gate-card-q-scope')).toBeNull();
+  });
+
+  it('shows the pull request of a completed run above its work products (O1)', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'SUCCEEDED',
+        orchestratorStartedAt: '2026-05-01T10:00:00Z',
+        completedAt: '2026-05-01T10:42:00Z',
+      }),
+      pullRequests: [
+        {
+          id: 'pr-1',
+          repository: 'eipasteur/retail-store-cart',
+          prUrl: 'https://github.com/eipasteur/retail-store-cart/pull/57',
+          prNumber: '57',
+          branch: 'aidlc/i1',
+          baseBranch: 'main',
+          createdAt: '2026-05-01T10:40:00Z',
+        },
+      ],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: '# Reqs',
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+
+    const pr = await screen.findByRole('link', { name: 'Pull request #57' });
+    expect(pr).toHaveAttribute('href', 'https://github.com/eipasteur/retail-store-cart/pull/57');
+    expect(document.querySelector('[data-slot="intent-outcome"]')).toBeNull();
+    const products = await screen.findByText('Work products');
+    expect(pr.compareDocumentPosition(products) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByText('SUCCEEDED')).toBeNull();
+  });
+
+  it('confirms Cancel run in an AlertDialog instead of window.confirm (X7, O8)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
+      gates: [waitingGate('h1', 1)],
+    });
+    cancel.mockResolvedValue({ ...baseDetail({ status: 'CANCELLED' }).intent });
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Cancel run' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Cancel this run?' });
+    expect(dialog).toHaveTextContent(
+      '"My intent" will stop and its pending questions will be retired.',
+    );
+    expect(cancel).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel run' }));
+    expect(cancel).toHaveBeenCalledWith('p1', 'i1');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('lets an owner delete from the shared menu and returns to the space', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'SUCCEEDED' }));
+    del.mockResolvedValue(undefined);
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete intent' }));
+    await screen.findByRole('alertdialog', { name: 'Delete this intent?' });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete intent' }));
+    expect(del).toHaveBeenCalledWith('p1', 'i1');
+    expect(await screen.findByTestId('space-page')).toBeInTheDocument();
+  });
+
+  it('hides Delete from members and keeps Configuration, Download and Audit', async () => {
+    projectCacheMock.role = 'member';
+    get.mockResolvedValue(baseDetail({ status: 'CANCELLED', agentCli: 'codex' }));
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Intent configuration' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^Download workspace/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Audit' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Delete intent' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Cancel run' })).toBeNull();
+  });
+
+  it('renders the header from the cached space row while the detail loads', async () => {
+    projectCacheMock.summary = {
+      id: 'i1',
+      title: 'Cached title',
+      status: 'WAITING',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: new Date(Date.now() - 3 * DAY).toISOString(),
+      completedAt: null,
+      scope: 'feature',
+      pendingHumanTaskId: 'h1',
+    };
+    get.mockImplementation(() => new Promise(() => {}));
+    renderAt();
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Cached title' }),
+    ).toBeInTheDocument();
+    // Status from the row, no age until the detail names the oldest open gate (R3-5).
+    expect(screen.getByText('Waiting for input')).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for input · /)).toBeNull();
+    expect(screen.getByRole('status', { name: 'Loading intent' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Intent actions' })).toBeNull();
+  });
 });

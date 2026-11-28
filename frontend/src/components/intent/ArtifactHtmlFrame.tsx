@@ -167,7 +167,7 @@ export function ArtifactHtmlFrame({ content, title }: { content: string; title?:
   return (
     <div className="not-prose mt-2" data-testid="artifact-html">
       <div className="mb-1 flex items-center justify-end gap-1">
-        <span className="mr-auto text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        <span className="mr-auto text-2xs font-medium uppercase tracking-wider text-muted-foreground/60">
           HTML
         </span>
         <Button

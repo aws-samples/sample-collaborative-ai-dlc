@@ -111,7 +111,6 @@
     "pages/IntentComposePage.tsx": 1,
     "pages/IntentGraphPage.tsx": 2,
     "pages/IntentObservabilityPage.tsx": 4,
-    "pages/IntentView.tsx": 3,
     "pages/ObservabilityDashboard.tsx": 1,
     "pages/Project.tsx": 6,
     "pages/ProjectSettings.tsx": 1,

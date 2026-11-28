@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { DiscussionThread } from './DiscussionThread';
 import type { DiscussionMessage } from '@/services/discussions';
