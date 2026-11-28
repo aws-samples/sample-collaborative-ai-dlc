@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatCount } from './format';
+import { formatBytes, formatCount, formatUsageBreakdown } from './format';
 
 describe('formatBytes', () => {
   it('formats bytes with 1024-based units, one decimal (UsageMetrics format)', () => {
@@ -33,5 +33,46 @@ describe('formatCount', () => {
   it('rounds to an integer and guards non-finite values', () => {
     expect(formatCount(12.6)).toBe('13');
     expect(formatCount(Number.NaN)).toBe('—');
+  });
+});
+
+describe('formatUsageBreakdown', () => {
+  const labels = (r: ReturnType<typeof formatUsageBreakdown>) =>
+    r.parts.map((p) => `${p.label} ${p.text}`);
+
+  it('labels input as uncached and totals every component when cache reads exist', () => {
+    const r = formatUsageBreakdown({
+      input: 27,
+      output: 2000,
+      cacheRead: 180_000,
+      cacheWrite: 12_000,
+    });
+    expect(labels(r)).toEqual([
+      'Uncached input 27',
+      'Output 2.0K',
+      'Cache reads 180.0K',
+      'Cache writes 12.0K',
+      'Total 194.0K',
+    ]);
+  });
+
+  it('labels plain input when there are no cache reads', () => {
+    const r = formatUsageBreakdown({ input: 1500, output: 500 });
+    expect(labels(r)).toEqual(['Input 1.5K', 'Output 500', 'Total 2.0K']);
+  });
+
+  it('keeps cache writes without cache reads under the plain input label', () => {
+    const r = formatUsageBreakdown({ input: 100, output: 50, cacheRead: 0, cacheWrite: 10 });
+    expect(labels(r)).toEqual(['Input 100', 'Output 50', 'Cache writes 10', 'Total 160']);
+  });
+
+  it('never shows a Total equal to a single component', () => {
+    const r = formatUsageBreakdown({ input: 0, output: 2000 });
+    expect(labels(r)).toEqual(['Input 0', 'Output 2.0K']);
+  });
+
+  it('omits missing or non-finite components', () => {
+    expect(formatUsageBreakdown({ output: 42 }).parts.map((p) => p.key)).toEqual(['output']);
+    expect(formatUsageBreakdown({ input: Number.NaN }).parts).toEqual([]);
   });
 });

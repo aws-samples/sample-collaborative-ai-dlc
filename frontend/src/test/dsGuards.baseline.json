@@ -136,7 +136,6 @@
     "components/blocks/WorkflowInsights.tsx": 1,
     "components/domain/ArtifactGraphPopover.tsx": 1,
     "components/graph/nodeStyles.ts": 1,
-    "components/intent/DeliveryStatus.tsx": 1,
     "components/intent/GateCard.tsx": 2,
     "components/intent/IntentPhaseDiagram.tsx": 1,
     "components/intent/NativeExportSetupDialog.tsx": 1,

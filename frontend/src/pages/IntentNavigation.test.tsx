@@ -9,6 +9,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectCache: () => ({ project: { name: 'MySpace' } }),
+  getCachedIntentSummary: () => undefined,
 }));
 
 const get = vi.fn();
@@ -120,8 +121,7 @@ beforeEach(() => {
 });
 
 describe('IntentObservabilityPage back navigation', () => {
-  it('back arrow navigates to space home, not intent work', async () => {
-    const user = userEvent.setup();
+  it('leaves the back link to the shell breadcrumb instead of repeating it', async () => {
     render(
       <MemoryRouter initialEntries={['/space/p1/intent/i1/observability']}>
         <Routes>
@@ -138,9 +138,8 @@ describe('IntentObservabilityPage back navigation', () => {
         </Routes>
       </MemoryRouter>,
     );
-    const backBtn = await screen.findByLabelText('Back to space');
-    await user.click(backBtn);
-    expect(screen.getByTestId('location')).toHaveTextContent('/space/p1');
+    await screen.findByRole('heading', { level: 1 });
+    expect(screen.queryByRole('link', { name: 'MySpace' })).toBeNull();
   });
 
   it('does not render a duplicate Overview button', async () => {
@@ -158,7 +157,7 @@ describe('IntentObservabilityPage back navigation', () => {
         </Routes>
       </MemoryRouter>,
     );
-    await screen.findByLabelText('Back to space');
+    await screen.findByRole('heading', { level: 1 });
     expect(screen.queryByRole('button', { name: /^Overview$/i })).not.toBeInTheDocument();
   });
 });

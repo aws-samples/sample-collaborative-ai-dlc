@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { DeliveryStatus } from './DeliveryStatus';
@@ -184,4 +184,35 @@ it('shows a newly eligible repository before opening requests there', async () =
   expect(screen.queryByRole('button', { name: 'Check for pull requests' })).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Open pull request' }));
   expect(intentsService.retryDelivery).toHaveBeenCalledTimes(1);
+});
+it('shows a recorded pull request instead of saying its status is unknown', () => {
+  render(
+    <DeliveryStatus
+      {...props}
+      delivery={undefined}
+      pullRequests={[
+        {
+          id: 'pr-1',
+          repository: 'eipasteur/retail-store-cart',
+          prUrl: 'https://github.com/eipasteur/retail-store-cart/pull/57',
+          prNumber: '57',
+          branch: 'aidlc/cf2-v2618-express',
+          baseBranch: null,
+          createdAt: '2026-10-01T10:56:00Z',
+        },
+      ]}
+    />,
+  );
+  expect(screen.queryByText('Pull request status unknown')).not.toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Pull request #57' })).toHaveAttribute(
+    'href',
+    'https://github.com/eipasteur/retail-store-cart/pull/57',
+  );
+  expect(screen.getByText(/was created in retail-store-cart/)).toBeInTheDocument();
+  expect(screen.getByText(/aidlc\/cf2-v2618-express/)).toBeInTheDocument();
+});
+it('uses no text below 11 px and no native details', () => {
+  const { container } = render(<DeliveryStatus {...props} />);
+  expect(container.innerHTML).not.toMatch(/text-\[(?:[0-9]|10)px\]/);
+  expect(container.querySelector('details')).toBeNull();
 });
