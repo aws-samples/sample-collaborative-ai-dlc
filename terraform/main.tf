@@ -873,6 +873,8 @@ module "agentcore" {
   # With enable_engine_data, also strips the runtime role's direct data access.
   enforce_runtime_grants = var.enforce_runtime_grants
 
+  enable_native_workspace_storage = var.enable_native_workspace_storage
+
   mcp_gateway_custom_targets = var.mcp_gateway_custom_targets
   runtime_mcp_credentials    = var.runtime_mcp_credentials
 

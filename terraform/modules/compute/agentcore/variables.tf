@@ -242,6 +242,12 @@ variable "enable_mcp_gateway" {
   default     = false
 }
 
+variable "enable_native_workspace_storage" {
+  description = "Create the EFS file system for native intent workspaces and mount it on the core runtime at /mnt/aidlc (requires network_mode = VPC). Setting it back to false deletes the file system with every workspace on it"
+  type        = bool
+  default     = false
+}
+
 variable "enable_engine_data" {
   description = "Route the engine's process state, knowledge graph, catalog, blob and realtime calls through the grant-verifying engine-data Lambda, and its credential/secret and source-control review calls through the credential broker and the source-control runtime alias (requires enable_mcp_gateway)"
   type        = bool
