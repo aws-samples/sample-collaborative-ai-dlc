@@ -85,6 +85,9 @@ jobs:
       - name: Test Neptune instance class defaults and changes
         run: terraform test -filter=tests/neptune-instance-class.tftest.hcl
 
+      - name: Test REST API access log identity fields
+        run: terraform test -filter=tests/api-access-log.tftest.hcl
+
       - name: Verify SSO plan output privacy
         run: node --test ../scripts/test/terraform-sso-privacy.test.mjs
 

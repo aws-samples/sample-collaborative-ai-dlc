@@ -575,6 +575,31 @@ resource "aws_api_gateway_deployment" "main" {
   }
 }
 
+locals {
+  # The identity fields are pseudonymous: `sub` is the Cognito user ID and
+  # `clientId` is set only for access tokens. Never add email, username, or
+  # token values here.
+  access_log_identity = var.access_log_identity == null ? var.environment == "prod" : var.access_log_identity
+  api_access_log_format = merge(
+    {
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      caller         = "$context.identity.caller"
+      user           = "$context.identity.user"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      resourcePath   = "$context.resourcePath"
+      status         = "$context.status"
+      protocol       = "$context.protocol"
+      responseLength = "$context.responseLength"
+    },
+    local.access_log_identity ? {
+      sub      = "$context.authorizer.claims.sub"
+      clientId = "$context.authorizer.claims.client_id"
+    } : {},
+  )
+}
+
 # CloudWatch Log Group for REST API access logs
 resource "aws_cloudwatch_log_group" "api_access_logs" {
   name              = "/aws/apigateway/${var.project_name}-rest-api-${var.environment}"
@@ -592,18 +617,7 @@ resource "aws_api_gateway_stage" "main" {
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access_logs.arn
-    format = jsonencode({
-      requestId      = "$context.requestId"
-      ip             = "$context.identity.sourceIp"
-      caller         = "$context.identity.caller"
-      user           = "$context.identity.user"
-      requestTime    = "$context.requestTime"
-      httpMethod     = "$context.httpMethod"
-      resourcePath   = "$context.resourcePath"
-      status         = "$context.status"
-      protocol       = "$context.protocol"
-      responseLength = "$context.responseLength"
-    })
+    format          = jsonencode(local.api_access_log_format)
   }
 }
 
