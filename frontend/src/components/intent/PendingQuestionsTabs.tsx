@@ -23,16 +23,12 @@ export function gateQuestionCount(gate: IntentGate): number {
   }
 }
 
-/** What the heading counts: every question the person must answer, across gates. */
-export function countQuestions(gates: IntentGate[]): number {
-  return gates.reduce((sum, gate) => sum + gateQuestionCount(gate), 0);
-}
-
-function QuestionsHeading({ id, count }: { id?: string; count: number }) {
+// No count: the tabs show how many there are, each card its own "Q1 / 2".
+function QuestionsHeading({ id }: { id?: string }) {
   return (
     <h2 id={id} className="flex items-center gap-2 text-sm font-semibold text-foreground">
       <FileQuestion aria-hidden="true" className="size-4 text-agent-waiting-fg" />
-      Questions for you <span className="font-normal text-muted-foreground">({count})</span>
+      Questions for you
     </h2>
   );
 }
@@ -85,7 +81,7 @@ export function PendingQuestionsTabs({
   if (!selectedGate) return null;
   const selectedId = selectedGate.humanTaskId;
 
-  const heading = <QuestionsHeading id={headingId} count={countQuestions(gates)} />;
+  const heading = <QuestionsHeading id={headingId} />;
   const regionProps = { role: 'region' as const, 'aria-label': 'Pending questions' };
 
   if (gates.length === 1) {

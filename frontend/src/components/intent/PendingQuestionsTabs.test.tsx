@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { useState } from 'react';
 import { render, screen, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
-import { PendingQuestionsTabs, countQuestions, gateTabLabel } from './PendingQuestionsTabs';
+import { PendingQuestionsTabs, gateTabLabel } from './PendingQuestionsTabs';
 import type { IntentGate } from '@/services/intents';
 
 const gate = (over: Partial<IntentGate> = {}): IntentGate =>
@@ -111,24 +111,9 @@ describe('PendingQuestionsTabs — keyboard navigation', () => {
 });
 
 describe('PendingQuestionsTabs — heading', () => {
-  it('counts the questions, not the gates, for a single structured gate', () => {
+  // D6: the heading carries no number; the tabs and each card's "Q1 / 2" do.
+  it('names the section without counting questions or gates', () => {
     renderTabs([
-      gate({
-        questions: JSON.stringify([
-          { text: 'Q1?', type: 'single', options: [] },
-          { text: 'Q2?', type: 'single', options: [] },
-          { text: 'Q3?', type: 'single', options: [] },
-          { text: 'Q4?', type: 'single', options: [] },
-          { text: 'Q5?', type: 'single', options: [] },
-        ]),
-      }),
-    ]);
-    expect(screen.getByRole('heading', { name: 'Questions for you (5)' })).toBeInTheDocument();
-    expect(countQuestions([gate({ kind: 'approval', questions: null })])).toBe(1);
-  });
-
-  it('sums the questions of every pending gate', () => {
-    const gates = [
       gate({
         humanTaskId: 'h1',
         questions: JSON.stringify([
@@ -137,8 +122,8 @@ describe('PendingQuestionsTabs — heading', () => {
         ]),
       }),
       gate({ humanTaskId: 'h2', kind: 'approval', questions: null, prompt: 'Approve the plan' }),
-    ];
-    renderTabs(gates);
-    expect(screen.getByRole('heading', { name: 'Questions for you (3)' })).toBeInTheDocument();
+    ]);
+    expect(screen.getByRole('heading', { name: 'Questions for you' })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
   });
 });
