@@ -196,25 +196,27 @@ const validateDistribution = async ({ archive, manifest, upstreamRef, harness })
   return { files, workspaceLayout };
 };
 
-const loadCurrentCacheEntry = async ({ s3, bucket, upstreamRef, harness }) => {
+// `runtimeSha256`: the profile's pin of its release runtime asset. An entry
+// built from a release asset with another digest, or before the pin existed,
+// is a miss: the asset is fetched and checked again, and the entry
+// overwritten. An entry built from dist/ at the commit needs no pin.
+const loadCurrentCacheEntry = async ({ s3, bucket, upstreamRef, harness, runtimeSha256 }) => {
   const manifestBody = await readObjectIfPresent({
     s3,
     bucket,
     key: distributionManifestKey(upstreamRef, harness),
   });
   if (!manifestBody) return null;
+  const manifest = JSON.parse(manifestBody.toString('utf8'));
+  const fromRelease = Boolean(manifest?.source?.releaseTag);
+  if (runtimeSha256 && fromRelease && manifest.source.runtimeSha256 !== runtimeSha256) return null;
   const archive = await readObjectIfPresent({
     s3,
     bucket,
     key: distributionArchiveKey(upstreamRef, harness),
   });
   if (!archive) return null;
-  return validateDistribution({
-    archive,
-    manifest: JSON.parse(manifestBody.toString('utf8')),
-    upstreamRef,
-    harness,
-  });
+  return validateDistribution({ archive, manifest, upstreamRef, harness });
 };
 
 // Compatibility with archives warmed by the initial seed-time implementation.
@@ -282,11 +284,12 @@ const fetchDistributionFiles = async ({ upstreamRef, harness }) => {
   const limits = { maxFiles: MAX_DISTRIBUTION_FILES, maxRetainedBytes: MAX_DISTRIBUTION_BYTES };
   const repoPrefix = `dist/${harness}/`;
   let releaseTag;
+  let runtimeSha256;
   try {
     const fetched = await fetchRepoFiles(upstreamRef, { prefixes: [repoPrefix], ...limits });
     return { files: withoutPrefix(fetched, repoPrefix), source: { path: repoPrefix } };
   } catch (error) {
-    releaseTag = profileFor(upstreamRef)?.runtimeReleaseTag;
+    ({ runtimeReleaseTag: releaseTag, runtimeSha256 } = profileFor(upstreamRef) ?? {});
     const noDist = NO_MATCHING_FILES_RE.test(String(error?.message ?? ''));
     if (!noDist || !releaseTag) {
       throw distributionLoadFailure({
@@ -301,12 +304,13 @@ const fetchDistributionFiles = async ({ upstreamRef, harness }) => {
   try {
     const fetched = await fetchReleaseRuntimeFiles(releaseTag, {
       commit: upstreamRef,
+      sha256: runtimeSha256,
       prefixes: [runtimePrefix],
       ...limits,
     });
     return {
       files: withoutPrefix(fetched, runtimePrefix),
-      source: { releaseTag, path: runtimePrefix },
+      source: { releaseTag, runtimeSha256, path: runtimePrefix },
     };
   } catch (error) {
     throw distributionLoadFailure({ error, harness, upstreamRef });
@@ -354,9 +358,13 @@ const loadDistribution = async ({ s3, bucket, upstreamRef, harness }) => {
   if (!HARNESS_DATA_DIRS[harness]) {
     throw new Error(`native-export: unsupported harness ${harness}`);
   }
-  const cached = await loadCurrentCacheEntry({ s3, bucket, upstreamRef, harness });
+  const runtimeSha256 = profileFor(upstreamRef)?.runtimeSha256;
+  const cached = await loadCurrentCacheEntry({ s3, bucket, upstreamRef, harness, runtimeSha256 });
   if (cached) return cached;
-  const legacy = await loadLegacyCacheEntry({ s3, bucket, upstreamRef, harness });
+  // A legacy entry records no source, so it cannot show the pinned asset.
+  const legacy = runtimeSha256
+    ? null
+    : await loadLegacyCacheEntry({ s3, bucket, upstreamRef, harness });
   if (legacy) return legacy;
   return fetchAndCacheDistribution({ s3, bucket, upstreamRef, harness });
 };

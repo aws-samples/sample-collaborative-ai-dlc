@@ -59,16 +59,18 @@ describe('AI-DLC compatibility profiles', () => {
       expect(tag, profile.id).toMatch(RELEASE_TAG_RE);
       // A tag of the same version: v2.11.3-preview.20261103.1 for 2.11.3.
       expect(tag.replace(/^v/, '').split('-')[0], profile.id).toBe(profile.upstreamVersion);
+      expect(profile.runtimeSha256, profile.id).toMatch(/^[0-9a-f]{64}$/);
     }
     // Earlier releases still commit dist/, which a native export reads.
     for (const profile of official.filter((entry) => !withRuntime.includes(entry))) {
       expect(profile.runtimeReleaseTag, profile.id).toBeUndefined();
+      expect(profile.runtimeSha256, profile.id).toBeUndefined();
     }
   });
 
   // profileFor returns the first profile whose ref matches: a duplicate
   // would hide a profile silently.
-  it.each(['upstreamRef', 'releaseId', 'runtimeReleaseTag'])(
+  it.each(['upstreamRef', 'releaseId', 'runtimeReleaseTag', 'runtimeSha256'])(
     'gives each profile its own %s',
     (field) => {
       const values = Object.values(AIDLC_COMPATIBILITY_PROFILES)

@@ -356,13 +356,17 @@ const fetchReleaseAsset = async (tag, name, maxBytes) => {
 
 // The files under `prefixes` in the runtime asset of the official release
 // `tag`. The tag only locates the release: it must have been built from
-// `commit` (its version.json `sourceDigest`), and the asset must match its
-// checksums.txt entry, or nothing is returned. The asset has no top-level
-// directory: its entries start `runtime/<harness>/` (and `plugins/`).
+// `commit` (its version.json `sourceDigest`), and the asset must match both
+// its checksums.txt entry and `sha256`, the digest reviewed with the profile,
+// or nothing is returned. checksums.txt comes from the same release as the
+// asset, so only the pinned digest catches an asset replaced together with
+// it. The asset has no top-level directory: its entries start
+// `runtime/<harness>/` (and `plugins/`).
 const fetchReleaseRuntimeFiles = async (
   tag,
   {
     commit,
+    sha256,
     prefixes,
     maxTarballBytes = MAX_REPO_TARBALL_BYTES,
     maxFiles = MAX_REPO_FILES,
@@ -375,6 +379,9 @@ const fetchReleaseRuntimeFiles = async (
   }
   if (!isCommitSha(commit)) {
     throw new Error('repo-fetch: a release runtime needs the full commit SHA it was built from');
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(sha256 ?? ''))) {
+    throw new Error('repo-fetch: a release runtime needs the pinned SHA-256 of its asset');
   }
   if (!Array.isArray(prefixes) || prefixes.length === 0) {
     throw new Error('repo-fetch: at least one path prefix is required');
@@ -406,8 +413,13 @@ const fetchReleaseRuntimeFiles = async (
   if (!expected) {
     throw new Error(`repo-fetch: release ${tag} checksums.txt lists no ${asset}`);
   }
+  if (expected.toLowerCase() !== sha256) {
+    throw new Error(
+      `repo-fetch: release ${tag} checksums.txt lists ${expected.toLowerCase()} for ${asset}, not the pinned ${sha256}`,
+    );
+  }
   const archive = await fetchReleaseAsset(tag, asset, maxTarballBytes);
-  if (createHash('sha256').update(archive).digest('hex') !== expected.toLowerCase()) {
+  if (createHash('sha256').update(archive).digest('hex') !== sha256) {
     throw new Error(`repo-fetch: ${asset} does not match its checksum in release ${tag}`);
   }
   const files = await extractFiles(archive, prefixes, {
