@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId } from 'react';
+import { Check } from 'lucide-react';
 import {
   GitHubIcon,
   GitLabIcon,
@@ -11,7 +12,22 @@ import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
+import { Alert } from './ui/alert';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
+import { Input } from './ui/input';
+import { KeyValueList } from './ui/key-value-list';
+import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { cn } from '@/lib/utils';
 import {
   codecommitStatus,
   githubAppService,
@@ -39,6 +55,8 @@ interface Props {
   initialInstance?: string;
 }
 
+const STEPS = ['Provider', 'Repositories', 'Details'] as const;
+
 // Short name for space naming: the last path segment for owner/repo ids, the
 // repository name for a CodeCommit ARN (whose last ':' segment is the name).
 const repoShortName = (fullName: string) =>
@@ -46,6 +64,53 @@ const repoShortName = (fullName: string) =>
 
 // Local form shape: gitProvider may be '' before the user selects one.
 type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
+
+function StepProgress({ step }: { step: number }) {
+  return (
+    <ol aria-label="Steps" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      {STEPS.map((label, index) => {
+        const n = index + 1;
+        const state = step === n ? 'current' : step > n ? 'done' : 'todo';
+        return (
+          <li
+            key={label}
+            aria-current={state === 'current' ? 'step' : undefined}
+            className="flex items-center gap-2"
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-2xs font-semibold tabular-nums',
+                state === 'current' && 'bg-primary text-primary-foreground',
+                state === 'done' && 'bg-agent-success/15 text-agent-success-fg',
+                state === 'todo' && 'bg-muted text-muted-foreground',
+              )}
+            >
+              {state === 'done' ? <Check className="h-3.5 w-3.5" /> : n}
+            </span>
+            {state === 'done' && <span className="sr-only">Completed: </span>}
+            <span
+              className={cn(
+                state === 'current' ? 'font-medium text-foreground' : 'text-muted-foreground',
+              )}
+            >
+              {label}
+            </span>
+            {index < STEPS.length - 1 && (
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'h-px w-4 sm:w-8',
+                  state === 'done' ? 'bg-agent-success/40' : 'bg-border',
+                )}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
 
 export function CreateProjectModal({
   onClose,
@@ -188,8 +253,6 @@ export function CreateProjectModal({
     setSelectedRepos([]);
     setPrimaryRepo('');
     setDelegationConfirmed(false);
-    setSelectedRepos([]);
-    setPrimaryRepo('');
   };
 
   // App vs OAuth discover different repo sets, so switching resets the picks.
@@ -199,10 +262,6 @@ export function CreateProjectModal({
     setSelectedRepos([]);
     setPrimaryRepo('');
     setFormData((prev) => ({ ...prev, gitRepo: '' }));
-  };
-
-  const handleSetPrimary = (repoFullName: string) => {
-    applyPrimaryRepo(repoFullName);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -290,98 +349,107 @@ export function CreateProjectModal({
     : false;
   const canProceedStep2 = selectedRepos.length > 0;
   const repoCount = selectedRepos.length;
+  const nextHintId = useId();
+  const step1Blocker = !formData.gitProvider
+    ? 'Select a git provider'
+    : sourceControlAuthType === 'github-app'
+      ? appConfigured === false
+        ? 'GitHub App is not configured'
+        : null
+      : gitStatusLoading
+        ? null
+        : formData.gitProvider === 'codecommit'
+          ? 'CodeCommit is not set up yet'
+          : `Connect ${gitProviderTerminology(formData.gitProvider).label} to continue`;
+  const step1Hint = canProceedStep1 ? null : step1Blocker;
+  const step2Hint = canProceedStep2 ? null : 'Select at least one repository';
+  const providerLabel = formData.gitProvider
+    ? gitProviderTerminology(formData.gitProvider).label
+    : 'Git';
+  const connectionSummary =
+    sourceControlAuthType === 'github-app'
+      ? 'GitHub App installation'
+      : sourceControlAuthType === 'codecommit-role'
+        ? `AWS CodeCommit (${codecommitRegion ?? 'region set by your platform admin'})`
+        : `Delegated ${providerLabel} OAuth identity`;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-2xl w-full mx-4">
-        <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
-          Create New Space
-        </h2>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !submitting) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl"
+        // A stray click or Escape must not throw away a half-filled wizard:
+        // only Cancel or Close end it once the reader is past the first step.
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          if (step > 1) event.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>Create space</DialogTitle>
+          <DialogDescription>
+            Connect a code host, choose its repositories, then name the space.
+          </DialogDescription>
+        </DialogHeader>
 
-        {/* Step Indicator */}
-        <div className="flex items-center gap-2 mb-6">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center">
-              <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-                  step === s
-                    ? 'bg-indigo-600 text-white'
-                    : step > s
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-200 dark:bg-gray-600 dark:text-gray-300'
-                }`}
-              >
-                {step > s ? '✓' : s}
-              </div>
-              {s < 3 && (
-                <div
-                  className={`w-8 h-0.5 ${step > s ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-600'}`}
-                />
-              )}
-            </div>
-          ))}
-        </div>
+        <StepProgress step={step} />
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+          <Alert tone="danger" live>
             {error}
-          </div>
+          </Alert>
         )}
 
         {/* Step 1: Connect Git Provider */}
         {step === 1 && (
-          <div>
-            <label
-              htmlFor="git-provider-select"
-              className="block font-medium mb-1 text-gray-900 dark:text-white"
-            >
-              Choose Git Provider
-            </label>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              A space connects to a single git provider.
-            </p>
-            <Select
-              value={formData.gitProvider}
-              onValueChange={(v) => handleProviderChange(v as GitProvider)}
-            >
-              <SelectTrigger id="git-provider-select" className="mb-4">
-                <SelectValue placeholder="Select a git provider" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="github">
-                  <span className="flex items-center gap-2">
-                    <GitHubIcon className="h-4 w-4" />
-                    GitHub
-                  </span>
-                </SelectItem>
-                <SelectItem value="gitlab">
-                  <span className="flex items-center gap-2">
-                    <GitLabIcon className="h-4 w-4" />
-                    GitLab
-                  </span>
-                </SelectItem>
-                <SelectItem value="bitbucket">
-                  <span className="flex items-center gap-2">
-                    <BitbucketIcon className="h-4 w-4" />
-                    Bitbucket
-                  </span>
-                </SelectItem>
-                <SelectItem value="codecommit">
-                  <span className="flex items-center gap-2">
-                    <CodeCommitIcon className="h-4 w-4" />
-                    AWS CodeCommit
-                  </span>
-                </SelectItem>
-              </SelectContent>
-            </Select>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="git-provider-select">Git provider</Label>
+              <p className="text-xs text-muted-foreground">
+                A space connects to a single git provider.
+              </p>
+              <Select
+                value={formData.gitProvider}
+                onValueChange={(v) => handleProviderChange(v as GitProvider)}
+              >
+                <SelectTrigger id="git-provider-select">
+                  <SelectValue placeholder="Select a git provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="github">
+                    <span className="flex items-center gap-2">
+                      <GitHubIcon className="h-4 w-4" />
+                      GitHub
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="gitlab">
+                    <span className="flex items-center gap-2">
+                      <GitLabIcon className="h-4 w-4" />
+                      GitLab
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="bitbucket">
+                    <span className="flex items-center gap-2">
+                      <BitbucketIcon className="h-4 w-4" />
+                      Bitbucket
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="codecommit">
+                    <span className="flex items-center gap-2">
+                      <CodeCommitIcon className="h-4 w-4" />
+                      AWS CodeCommit
+                    </span>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             {formData.gitProvider === 'gitlab' && (gitlabInstances?.length || instance) ? (
-              <>
-                <label
-                  htmlFor="gitlab-instance-select"
-                  className="block font-medium mb-1 text-gray-900 dark:text-white"
-                >
-                  GitLab instance
-                </label>
+              <div className="space-y-1.5">
+                <Label htmlFor="gitlab-instance-select">GitLab instance</Label>
                 <Select
                   value={instance ?? 'gitlab.com'}
                   onValueChange={(host) => {
@@ -390,7 +458,7 @@ export function CreateProjectModal({
                     setDelegationConfirmed(false);
                   }}
                 >
-                  <SelectTrigger id="gitlab-instance-select" className="mb-4">
+                  <SelectTrigger id="gitlab-instance-select">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -407,122 +475,135 @@ export function CreateProjectModal({
                     ))}
                   </SelectContent>
                 </Select>
-              </>
+              </div>
             ) : null}
             {gitStatusError && sourceControlAuthType !== 'github-app' && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
+              <Alert
+                tone="danger"
+                action={
+                  <Button type="button" variant="outline" size="sm" onClick={gitRefresh}>
+                    Retry
+                  </Button>
+                }
+              >
                 {gitStatusError}
-                <button type="button" className="ml-2 underline" onClick={gitRefresh}>
-                  Retry
-                </button>
-              </div>
+              </Alert>
             )}
             {!formData.gitProvider ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Select a git provider to continue.
-              </p>
+              <p className="text-sm text-muted-foreground">Select a git provider to continue.</p>
             ) : (
               <>
                 {formData.gitProvider === 'github' && (
-                  <div className="mb-4 space-y-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Authentication
-                    </label>
-                    <label className="flex items-start gap-2 cursor-pointer">
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm font-medium">Authentication</legend>
+                    <label className="flex cursor-pointer items-start gap-2">
                       <input
                         type="radio"
                         name="sourceControlAuthType"
                         checked={sourceControlAuthType === 'github-app'}
                         onChange={() => handleAuthTypeChange('github-app')}
                         disabled={appConfigured === false}
-                        className="mt-1 accent-indigo-600"
+                        className="mt-1 accent-primary"
                       />
-                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="text-sm">
                         <span className="font-medium">GitHub App</span>
-                        <span className="block text-xs text-gray-500 dark:text-gray-400">
+                        <span className="block text-xs text-muted-foreground">
                           {appConfigured === false
                             ? 'Not configured — ask a platform admin to set up the GitHub App.'
                             : 'Uses the platform GitHub App installation. No personal GitHub connection needed.'}
                         </span>
                       </span>
                     </label>
-                    <label className="flex items-start gap-2 cursor-pointer">
+                    <label className="flex cursor-pointer items-start gap-2">
                       <input
                         type="radio"
                         name="sourceControlAuthType"
                         checked={sourceControlAuthType === 'github-oauth'}
                         onChange={() => handleAuthTypeChange('github-oauth')}
-                        className="mt-1 accent-indigo-600"
+                        className="mt-1 accent-primary"
                       />
-                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="text-sm">
                         <span className="font-medium">My GitHub OAuth identity</span>
-                        <span className="block text-xs text-gray-500 dark:text-gray-400">
+                        <span className="block text-xs text-muted-foreground">
                           The space delegates your personal connection for repository access.
                         </span>
                       </span>
                     </label>
-                  </div>
+                  </fieldset>
                 )}
                 {sourceControlAuthType === 'github-app' ? (
                   appConfigured === null ? (
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      Checking GitHub App configuration...
+                    <p className="text-sm text-muted-foreground" role="status">
+                      Checking GitHub App configuration…
                     </p>
                   ) : null
                 ) : gitStatusLoading ? (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
+                  <p className="text-sm text-muted-foreground" role="status">
+                    Checking connection…
+                  </p>
                 ) : formData.gitProvider === 'gitlab' &&
                   instance &&
                   gitStatusError ? null : isOAuthGitProvider(formData.gitProvider) ? (
-                  <GitConnectButton
-                    provider={formData.gitProvider}
-                    instance={instance}
-                    connected={gitStatus?.connected || false}
-                    reauthorizationRequired={gitStatus?.reauthorizationRequired}
-                    missingScopes={gitStatus?.missingScopes}
-                    onDisconnect={gitRefresh}
-                  />
+                  gitStatus?.connected ? (
+                    <p className="flex items-center gap-1.5 text-sm text-agent-success-fg">
+                      <Check className="h-4 w-4" aria-hidden="true" />
+                      {providerLabel} connected
+                    </p>
+                  ) : (
+                    <GitConnectButton
+                      provider={formData.gitProvider}
+                      instance={instance}
+                      connected={false}
+                      reauthorizationRequired={gitStatus?.reauthorizationRequired}
+                      missingScopes={gitStatus?.missingScopes}
+                      onDisconnect={() => {}}
+                    />
+                  )
                 ) : formData.gitProvider === 'codecommit' && !gitStatus?.connected ? (
                   // Not configured: a platform admin sets up the one CodeCommit
                   // connection. Same pattern as the GitHub App — Next is blocked
                   // until it exists (canProceedStep1).
-                  <div className="rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800/60 dark:bg-amber-900/20">
-                    <p className="font-medium text-amber-800 dark:text-amber-300">
-                      CodeCommit is not set up yet.
-                    </p>
-                    <p className="mt-0.5 text-xs text-amber-800/80 dark:text-amber-300/80">
-                      Ask a platform admin to set up CodeCommit in Platform Admin › Source Control.
-                    </p>
-                  </div>
+                  <Alert tone="warning" title="CodeCommit is not set up yet.">
+                    Ask a platform admin to set up CodeCommit in Platform Admin › Source Control.
+                  </Alert>
                 ) : null}
               </>
             )}
-            <div className="flex justify-end gap-2 mt-6">
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-              >
+            <DialogFooter className="sm:items-center">
+              {step1Hint && (
+                <p
+                  id={`${nextHintId}-1`}
+                  className="text-xs text-muted-foreground sm:mr-auto"
+                  aria-live="polite"
+                >
+                  {step1Hint}
+                </p>
+              )}
+              <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                type="button"
                 onClick={() => setStep(2)}
                 disabled={!canProceedStep1}
-                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                aria-describedby={step1Hint ? `${nextHintId}-1` : undefined}
               >
                 Next
-              </button>
-            </div>
+              </Button>
+            </DialogFooter>
           </div>
         )}
 
         {/* Step 2: Select Repositories (provider is always set past step 1) */}
         {step === 2 && formData.gitProvider && (
-          <div>
-            <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Choose one or more repositories. The primary repo drives issue integration and space
-              naming.
-            </p>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Select repositories</h3>
+              <p className="text-xs text-muted-foreground">
+                Choose one or more repositories. The primary repository drives issue integration and
+                the space name.
+              </p>
+            </div>
             <GitRepoSelect
               provider={formData.gitProvider}
               instance={instance}
@@ -532,202 +613,195 @@ export function CreateProjectModal({
               repoSource={sourceControlAuthType === 'github-app' ? 'github-app' : 'oauth'}
             />
             {selectedRepos.length > 1 && (
-              <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
-                <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
-                  <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                    Designate primary
-                  </span>
+              <fieldset className="divide-y rounded-md border">
+                <legend className="sr-only">Primary repository</legend>
+                <div className="bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                  Primary repository
                 </div>
                 {selectedRepos.map((repo) => (
                   <label
                     key={repo}
-                    className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                    className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-accent/50"
                   >
                     <input
                       type="radio"
                       name="primaryRepo"
                       checked={primaryRepo === repo}
-                      onChange={() => handleSetPrimary(repo)}
-                      className="accent-indigo-600"
+                      onChange={() => applyPrimaryRepo(repo)}
+                      className="accent-primary"
                     />
-                    <span
-                      className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1"
-                      title={repo}
-                    >
+                    <span className="flex-1 truncate text-sm" title={repo}>
                       {formData.gitProvider ? repoDisplayName(formData.gitProvider, repo) : repo}
                     </span>
                     {primaryRepo === repo && (
-                      <span className="text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-1.5 py-0.5 rounded">
-                        primary
-                      </span>
+                      <Badge variant="secondary" size="sm">
+                        Primary
+                      </Badge>
                     )}
                   </label>
                 ))}
-              </div>
+              </fieldset>
             )}
-            <div className="flex justify-end gap-2 mt-6">
-              <button
-                onClick={() => setStep(1)}
-                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-              >
+            <DialogFooter className="sm:items-center">
+              {step2Hint && (
+                <p
+                  id={`${nextHintId}-2`}
+                  className="text-xs text-muted-foreground sm:mr-auto"
+                  aria-live="polite"
+                >
+                  {step2Hint}
+                </p>
+              )}
+              <Button type="button" variant="ghost" onClick={() => setStep(1)}>
                 Back
-              </button>
-              <button
+              </Button>
+              <Button
+                type="button"
                 onClick={() => setStep(3)}
                 disabled={!canProceedStep2}
-                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                aria-describedby={step2Hint ? `${nextHintId}-2` : undefined}
               >
                 Next
-              </button>
-            </div>
+              </Button>
+            </DialogFooter>
           </div>
         )}
 
         {/* Step 3: Project Details */}
         {step === 3 && formData.gitProvider && (
-          <form onSubmit={handleSubmit}>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Space Details</h3>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Space Name
-              </label>
-              <input
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <h3 className="text-sm font-medium">Space details</h3>
+            <div className="space-y-1.5">
+              <Label htmlFor="space-name">Space name</Label>
+              <Input
+                id="space-name"
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 required
                 disabled={submitting}
               />
             </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {repoCount > 1 ? 'Primary Repository' : 'Repository'}
-              </label>
-              <input
-                type="text"
-                value={formData.gitRepo}
-                className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"
-                disabled
-              />
-              <div className="flex items-center gap-2 mt-1">
-                {repoCount > 1 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    +{repoCount - 1} additional repositor
-                    {repoCount - 1 === 1 ? 'y' : 'ies'}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="mb-4 space-y-3 rounded border p-3">
-              <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                Project source control
-              </p>
-              <p className="text-sm text-gray-700 dark:text-gray-300">
-                {sourceControlAuthType === 'github-app'
-                  ? 'GitHub App installation'
-                  : sourceControlAuthType === 'codecommit-role'
-                    ? `AWS CodeCommit (${codecommitRegion ?? 'region set by your platform admin'})`
-                    : `Delegated ${formData.gitProvider ? gitProviderTerminology(formData.gitProvider).label : 'Git'} OAuth identity`}
-                <span className="block text-xs text-gray-500 dark:text-gray-400">
-                  {sourceControlAuthType === 'codecommit-role'
-                    ? 'Managed by your platform admin.'
-                    : 'Chosen in step 1 — go back to change it.'}
-                </span>
-              </p>
+            <KeyValueList
+              items={[
+                {
+                  label: repoCount > 1 ? 'Primary repository' : 'Repository',
+                  value: (
+                    <>
+                      <span className="break-all">
+                        {repoDisplayName(formData.gitProvider, formData.gitRepo)}
+                      </span>
+                      {repoCount > 1 && (
+                        <span className="block text-xs text-muted-foreground">
+                          +{repoCount - 1} more{' '}
+                          {repoCount - 1 === 1 ? 'repository' : 'repositories'}
+                        </span>
+                      )}
+                    </>
+                  ),
+                },
+                {
+                  label: 'Source control',
+                  value: (
+                    <>
+                      {connectionSummary}
+                      <span className="block text-xs text-muted-foreground">
+                        {sourceControlAuthType === 'codecommit-role'
+                          ? 'Managed by your platform admin.'
+                          : 'Chosen in step 1 — go back to change it.'}
+                      </span>
+                    </>
+                  ),
+                },
+              ]}
+            />
+            <div className="space-y-3 rounded-md border p-3">
               {sourceControlAuthType.endsWith('-oauth') && (
-                <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <label className="flex items-start gap-2 text-sm">
                   <input
                     type="checkbox"
                     checked={delegationConfirmed}
                     onChange={(event) => setDelegationConfirmed(event.target.checked)}
                     disabled={submitting}
-                    className="mt-0.5"
+                    className="mt-0.5 accent-primary"
                   />
                   I confirm that this space may use my connected identity for all selected
                   repositories.
                 </label>
               )}
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-xs text-muted-foreground">
                 Every repository is verified before the space is available.
               </p>
             </div>
             {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
-              <div className="mb-4">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.issueIntegrationEnabled ?? false}
-                    onChange={(e) =>
-                      setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })
-                    }
-                    className="mt-0.5"
-                    disabled={submitting}
-                  />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium">
-                      Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
-                      integration
-                    </span>
-                    <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      Browse issues on the space page and start intents from them.
-                      {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
-                    </span>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.issueIntegrationEnabled ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })
+                  }
+                  className="mt-0.5 accent-primary"
+                  disabled={submitting}
+                />
+                <span className="text-sm">
+                  <span className="font-medium">
+                    Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
+                    integration
                   </span>
-                </label>
-              </div>
+                  <span className="block text-xs text-muted-foreground">
+                    Browse issues on the space page and start intents from them.
+                    {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
+                  </span>
+                </span>
+              </label>
             )}
-            <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-                AI-DLC v2 settings
-              </p>
-              {v2Error && <p className="text-xs text-red-600 dark:text-red-400">{v2Error}</p>}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="space-y-1">
+                <h4 id="space-workflow-label" className="text-sm font-medium">
                   Workflow
-                </label>
-                <Select value={workflowId} onValueChange={setWorkflowId} disabled={submitting}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a workflow'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {workflows.map((w) => (
-                      <SelectItem key={w.workflowId} value={w.workflowId}>
-                        {w.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                </h4>
+                <p className="text-xs text-muted-foreground">
+                  The method every intent in this space follows. Scope is chosen per intent; runtime
+                  settings can be tuned later in space settings.
+                </p>
               </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Scope is chosen per-intent. Park release and other runtime settings can be tuned
-                later in space settings.
-              </p>
+              {v2Error && <Alert tone="danger">{v2Error}</Alert>}
+              <Select value={workflowId} onValueChange={setWorkflowId} disabled={submitting}>
+                <SelectTrigger aria-labelledby="space-workflow-label">
+                  <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a workflow'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {workflows.map((w) => (
+                    <SelectItem key={w.workflowId} value={w.workflowId}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <div className="flex justify-end gap-2 mt-6">
-              <button
+            <DialogFooter>
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={() => setStep(2)}
-                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 disabled={submitting}
               >
                 Back
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
-                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                loading={submitting}
                 disabled={
-                  submitting ||
-                  !workflowId ||
-                  (sourceControlAuthType.endsWith('-oauth') && !delegationConfirmed)
+                  !workflowId || (sourceControlAuthType.endsWith('-oauth') && !delegationConfirmed)
                 }
               >
-                {submitting ? 'Creating...' : 'Create Space'}
-              </button>
-            </div>
+                Create space
+              </Button>
+            </DialogFooter>
           </form>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

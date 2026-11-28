@@ -917,6 +917,20 @@ export function useProjectSprintsCache(projectId: string | null) {
  * (qk.projectIntents): no refetch while fresh, last value kept on failure.
  * `intents` is undefined while unknown — never an empty placeholder list.
  */
+export function useSpaceIntents(projectId: string | null) {
+  const query = useQuery({
+    ...intentsQuery(projectId ?? ''),
+    enabled: Boolean(projectId),
+  });
+  return {
+    intents: projectId ? query.data : undefined,
+    loading: Boolean(projectId) && query.isPending,
+    error: query.error,
+    updatedAt: query.dataUpdatedAt,
+    refresh: query.refetch,
+  };
+}
+
 /** Summary of one intent from the cached space list, for header placeholders. */
 export function getCachedIntentSummary(
   projectId: string,

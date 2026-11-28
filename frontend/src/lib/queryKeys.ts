@@ -22,6 +22,8 @@ export const qk = {
   projects: () => ['projects'] as const,
   agentsSettings: () => ['agents', 'settings'] as const,
   projectIntents: (projectId: string) => ['project', projectId, 'intents'] as const,
+  spaceMetrics: (projectId: string, window: string) =>
+    ['project', projectId, 'metrics', window] as const,
   intentDetail: (projectId: string, intentId: string) =>
     ['intent', projectId, intentId, 'detail'] as const,
   compiled: (workflowId: string, request: CompiledRequest) => {

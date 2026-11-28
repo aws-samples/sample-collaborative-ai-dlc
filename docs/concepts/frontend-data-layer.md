@@ -77,6 +77,7 @@ Saves go through `afterWrite(write, ...prefixes)` in `lib/afterWrite.ts`. When t
 - Workflow saves refresh the workflow's keys (including its compiled views) and the workflow list.
 - Agent settings and credential saves refresh the settings and credential views they change.
 - Successful intent changes (create, cancel, delete, and so on) refresh the space's intent lists, including the lists filtered by status. The spaces view behind the sidebar, the dashboard, and the command palette shows those lists without reloading them on its own, so it re-reads a list it shows as soon as that list is marked out of date.
+- Deleting an intent removes all of that intent's data from the cache.
 
 `afterWrite` refreshes even when the save fails, because the server may have applied the change before the error. Intent changes refresh only when they succeed. Keep this choice in the service, so every caller follows the same rule.
 

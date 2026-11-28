@@ -587,6 +587,21 @@ describe('useProjectsCache — shared queryCache store', () => {
     expect(getCachedIntentSummary('p1', 'missing')).toBeUndefined();
   });
 
+  it('lets the Space page read the shell-fetched list without a second request', async () => {
+    const intents = [fullIntent('i-1', 'RUNNING')];
+    cacheServiceMocks.listProjects.mockResolvedValueOnce([v2Space('p1')]);
+    cacheServiceMocks.listIntents.mockResolvedValueOnce(intents);
+
+    const { getProjectsWithSprints, useSpaceIntents } = await import('./useProjectsCache');
+    await getProjectsWithSprints();
+    const { result } = renderHook(() => useSpaceIntents('p1'));
+
+    expect(result.current.intents).toBe(intents);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.updatedAt).toEqual(expect.any(Number));
+    expect(cacheServiceMocks.listIntents).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps stable references when nothing changed', async () => {
     cacheServiceMocks.listProjects.mockResolvedValueOnce([v2Space('p1')]);
     cacheServiceMocks.listIntents.mockResolvedValueOnce([fullIntent('i-1', 'RUNNING')]);

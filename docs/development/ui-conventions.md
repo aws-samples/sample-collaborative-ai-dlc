@@ -51,6 +51,17 @@ Use `Disclosure` (`components/ui/disclosure.tsx`) for any collapsible content. D
 - Show `sentence` to the user, for example "This stage uses a mode this platform version does not support yet."
 - When the orchestrator or the agent runtime gains a failure code, add its sentence to `FAILURE_SENTENCES`. An unknown code falls back to "The run stopped because of an internal error."
 
+## Confirmations
+
+Any action that starts or restarts work, spends money, or discards data is confirmed in an `AlertDialog` (`components/ui/alert-dialog.tsx`). Do not use `window.confirm`.
+
+- The title is the question: "Delete this intent?"
+- The description states the consequence in one or two sentences, including what is preserved.
+- The cancel button says what is kept ("Keep intent"); the action button repeats the verb ("Delete intent").
+- A destructive action uses `<AlertDialogAction variant="destructive">`. Cancel receives the initial focus, so a destructive action is never the default.
+
+`components/intent/IntentActionsMenu.tsx` is the reference implementation.
+
 ## Navigation
 
 - The **Spaces** dashboard (`/dashboard`, also `/spaces`; the default after login) shows the spaces as cards, or as a table when the reader chose it (`aidlc-spaces-view`, per browser). A card folds its open intents behind one line; the space page has the rest. **My work** (`/my-work`) lists what needs the reader across spaces. Register a new top-level page in `routes/registry.ts`, add its breadcrumb in `AppHeader`, and its entry in the command palette's `PAGES`.

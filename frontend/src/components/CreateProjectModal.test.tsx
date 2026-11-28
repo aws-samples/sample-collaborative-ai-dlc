@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@/test/query';
 import userEvent from '@testing-library/user-event';
 
 // Stub the git-provider status hook + heavy child widgets so the modal renders
@@ -23,7 +23,14 @@ vi.mock('../hooks/useGitProviderStatus', () => ({
     refresh: () => {},
   })),
 }));
-vi.mock('./GitConnectButton', () => ({ GitConnectButton: () => null }));
+// Marker for the connect affordance: the modal must only mount it while the
+// caller is NOT connected (the real button also carries a Disconnect action,
+// which has no place inside a creation flow).
+vi.mock('./GitConnectButton', () => ({
+  GitConnectButton: ({ provider }: { provider: string }) => (
+    <button type="button">connect-{provider}</button>
+  ),
+}));
 const CODECOMMIT_ARN = 'arn:aws:codecommit:eu-west-1:123456789012:widgets';
 // The repo picker is stubbed to a single "select" button. CodeCommit now lists
 // through the generic provider path (no pre-fetched list prop), so the stub
@@ -129,7 +136,62 @@ describe('CreateProjectModal', () => {
     expect(screen.queryByText('Sprint lifecycle')).not.toBeInTheDocument();
     expect(screen.queryByText('AI-DLC v2 workflow')).not.toBeInTheDocument();
     // Step 1 goes straight to the git-provider choice.
-    expect(screen.getByText('Choose Git Provider')).toBeInTheDocument();
+    expect(screen.getByText('Git provider')).toBeInTheDocument();
+  });
+
+  it('is an accessible dialog with a labelled three-step progress list', async () => {
+    const onClose = vi.fn();
+    await renderModal(<CreateProjectModal onClose={onClose} onCreated={() => {}} />);
+    const dialog = screen.getByRole('dialog', { name: 'Create space' });
+    const steps = within(dialog).getByRole('list', { name: 'Steps' });
+    const items = within(steps).getAllByRole('listitem');
+    expect(items.map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Provider'),
+      expect.stringContaining('Repositories'),
+      expect.stringContaining('Details'),
+    ]);
+    expect(items[0]).toHaveAttribute('aria-current', 'step');
+    expect(items[1]).not.toHaveAttribute('aria-current');
+
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows a connected provider as a status line, never a Disconnect action', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+    await user.click(screen.getByRole('radio', { name: /My GitHub OAuth identity/ }));
+    expect(screen.getByText('GitHub connected')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /connect-github/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the connect action only while the caller is not connected', async () => {
+    oauthConnected = false;
+    vi.mocked(githubAppService.getStatus).mockResolvedValue({ configured: false });
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+    expect(await screen.findByRole('button', { name: 'connect-github' })).toBeInTheDocument();
+    expect(screen.queryByText('GitHub connected')).not.toBeInTheDocument();
+  });
+
+  it('labels the step-3 workflow panel "Workflow" without product jargon', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    expect(screen.getByRole('heading', { name: 'Space details' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Workflow' })).toBeInTheDocument();
+    expect(screen.queryByText(/AI-DLC v2 settings/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('listitem', { current: 'step' })).toHaveTextContent('Details');
+    expect(screen.getByRole('textbox', { name: 'Space name' })).toHaveValue('widgets');
   });
 
   it('loads the workflow catalog on mount (no v2 opt-in needed)', async () => {
@@ -151,7 +213,7 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
     // Step 3: the canonical aidlc-v2 workflow is auto-selected once loaded.
-    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
+    const createBtn = await screen.findByRole('button', { name: 'Create space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
     await user.click(createBtn);
 
@@ -239,7 +301,7 @@ describe('CreateProjectModal', () => {
       }),
     );
     await user.click(screen.getByRole('checkbox', { name: /Enable GitLab issue integration/ }));
-    await user.click(screen.getByRole('button', { name: 'Create Space' }));
+    await user.click(screen.getByRole('button', { name: 'Create space' }));
     const repo = 'gitlab:git.example.org/acme/widgets';
     await waitFor(() =>
       expect(projectsService.create).toHaveBeenCalledWith(
@@ -268,7 +330,7 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
 
-    const createButton = screen.getByRole('button', { name: 'Create Space' });
+    const createButton = screen.getByRole('button', { name: 'Create space' });
     expect(createButton).toBeDisabled();
     await user.click(
       screen.getByRole('checkbox', {
@@ -299,7 +361,7 @@ describe('CreateProjectModal', () => {
     await user.click(nextButton);
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
+    const createBtn = await screen.findByRole('button', { name: 'Create space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
     await user.click(createBtn);
 
@@ -309,6 +371,61 @@ describe('CreateProjectModal', () => {
       }),
     );
     expect(onCreated).toHaveBeenCalled();
+  });
+
+  it('explains a disabled Next next to the button on step 1', async () => {
+    oauthConnected = false;
+    vi.mocked(githubAppService.getStatus).mockResolvedValue({ configured: false });
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+    const next = screen.getByRole('button', { name: 'Next' });
+    await waitFor(() => expect(next).toBeDisabled());
+    expect(next).toHaveAccessibleDescription('Connect GitHub to continue');
+  });
+
+  it('explains a disabled Next next to the button on step 2 until a repository is selected', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+    const stepOneNext = screen.getByRole('button', { name: 'Next' });
+    await waitFor(() => expect(stepOneNext).toBeEnabled());
+    expect(stepOneNext).not.toHaveAttribute('aria-describedby');
+    await user.click(stepOneNext);
+    const stepTwoNext = screen.getByRole('button', { name: 'Next' });
+    expect(stepTwoNext).toBeDisabled();
+    expect(stepTwoNext).toHaveAccessibleDescription('Select at least one repository');
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    expect(stepTwoNext).toBeEnabled();
+    expect(screen.queryByText('Select at least one repository')).not.toBeInTheDocument();
+  });
+
+  it('keeps step 2 and its selection on Escape or a click outside; Cancel still closes', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    await renderModal(
+      <CreateProjectModal onClose={onClose} onCreated={() => {}} initialProvider="github" />,
+    );
+    const stepOneNext = screen.getByRole('button', { name: 'Next' });
+    await waitFor(() => expect(stepOneNext).toBeEnabled());
+    await user.click(stepOneNext);
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    const stepTwoNext = screen.getByRole('button', { name: 'Next' });
+    expect(stepTwoNext).toBeEnabled();
+
+    await user.keyboard('{Escape}');
+    // The overlay sits outside the content: a pointer down there is an outside click.
+    fireEvent.pointerDown(document.body);
+    expect(onClose).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: 'Create space' });
+    const steps = within(dialog).getAllByRole('listitem');
+    expect(steps[1]).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('blocks the App path and falls back to OAuth when the App is unconfigured', async () => {
@@ -339,7 +456,7 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    await user.click(await screen.findByRole('button', { name: 'Create Space' }));
+    await user.click(await screen.findByRole('button', { name: 'Create space' }));
 
     // The project survives unbound; the launch guard blocks repository-backed
     // starts until an owner rebinds it in project settings.
@@ -379,7 +496,7 @@ describe('CreateProjectModal', () => {
     // Step 2 lists repositories through the generic path (ARN ids).
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
+    const createBtn = await screen.findByRole('button', { name: 'Create space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
     await user.click(createBtn);
 

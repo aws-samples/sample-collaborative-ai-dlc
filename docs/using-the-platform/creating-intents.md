@@ -244,6 +244,6 @@ Running intents export their latest completed workflow checkpoint, so work from 
 
 ## The space intent list
 
-The space page lists all intents with live status (Running, Waiting for input, Completed, Failed), created/updated timestamps, and sorting. **My work** lists the intents that need you across spaces; the **Spaces** dashboard shows each space's work status and active intents.
+The space page lists all intents in one list ordered by what needs doing, with live status (Running, Waiting for input, Completed, Failed), created/updated timestamps, and filters. **My work** lists the intents that need you across spaces; the **Spaces** dashboard shows each space's work status and active intents.
 
 Owners and admins can delete non-running intents from the list; deletion removes the intent's artifacts, process history, and discussions.
