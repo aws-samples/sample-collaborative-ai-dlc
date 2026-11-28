@@ -243,7 +243,7 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_native_workspace_storage" {
-  description = "Create the EFS file system for native intent workspaces and mount it on the core runtime at /mnt/aidlc (requires network_mode = VPC). Setting it back to false deletes the file system with every workspace on it"
+  description = "Create the EFS file system for native intent workspaces and mount it on the core runtime at /mnt/aidlc (requires network_mode = VPC). Setting it back to false deletes the file system with every workspace on it, and new sessions of the runtime fail while that apply runs"
   type        = bool
   default     = false
 }

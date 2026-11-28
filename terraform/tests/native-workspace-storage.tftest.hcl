@@ -1,6 +1,7 @@
 # Workspace storage for native intents (enable_native_workspace_storage): off
-# by default and then absent, and when on, reachable and mountable by the core
-# runtime only.
+# by default and then absent. When on, NFS is open to the runtime's security
+# group only, and the runtime role is the only principal that may mount it.
+# Managed environment runtimes share that group and that role.
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }
@@ -141,6 +142,14 @@ run "storage_on_adds_the_file_system_and_the_mount" {
   assert {
     condition     = alltrue([for target in aws_efs_mount_target.native_workspace : target.security_groups == toset(["sg-0bbbbbbbbbbbbbbbb"])])
     error_message = "The mount targets must sit behind the storage security group only."
+  }
+  assert {
+    condition = alltrue(concat(
+      [for target in aws_efs_mount_target.native_workspace : target.file_system_id == "fs-0123456789abcdef0"],
+      [aws_efs_access_point.native_workspace[0].file_system_id == "fs-0123456789abcdef0"],
+      [aws_efs_file_system_policy.native_workspace[0].file_system_id == "fs-0123456789abcdef0"],
+    ))
+    error_message = "The mount targets, the access point and the policy must belong to the workspace file system."
   }
   assert {
     condition = alltrue([

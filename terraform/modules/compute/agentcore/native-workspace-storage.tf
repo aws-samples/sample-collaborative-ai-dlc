@@ -12,6 +12,14 @@
 #     so the runtime waits for the mount targets, the file system policy and
 #     the role policy below.
 # https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-filesystem-configurations.html
+#
+# Switching the variable off again interrupts the runtime. Terraform removes
+# what a resource depends on before it updates that resource, so the storage
+# goes first and the runtime drops its entry last. In between the runtime still
+# asks for the mount, and every new session fails. create_before_destroy would
+# turn the order round, but Terraform forces it onto everything such a resource
+# depends on: here the runtime's subnets, security group and role, in every
+# deployment, with the storage on or off.
 
 locals {
   native_workspace_storage_enabled = var.enable_native_workspace_storage && local.vpc_enabled
@@ -138,8 +146,9 @@ resource "aws_efs_file_system_policy" "native_workspace" {
   })
 }
 
-# Managed environment runtimes use this role too (module.managed_environments).
-# They get the permission, not the mount.
+# Managed environment runtimes use this role and the runtime's security group
+# too (module.managed_environments). AgentCore does not mount the storage for
+# them, but the permission and the network path are theirs as well.
 resource "aws_iam_role_policy" "agentcore_native_workspace" {
   count = local.native_workspace_storage_enabled ? 1 : 0
 

@@ -443,7 +443,7 @@ variable "auth_certificate_arn" {
 }
 
 variable "enable_native_workspace_storage" {
-  description = "Create the encrypted EFS file system for native intent workspaces and mount it on the core AgentCore runtime at /mnt/aidlc. Every session of that runtime sees the mount, and a mount that fails makes every invocation of the runtime fail. Setting it back to false deletes the file system with every workspace on it"
+  description = "Create the encrypted EFS file system for native intent workspaces and mount it on the core AgentCore runtime at /mnt/aidlc. Every session of that runtime sees the mount, and a mount that fails makes every invocation of the runtime fail. Setting it back to false deletes the file system with every workspace on it, and new sessions of that runtime fail while that apply runs"
   type        = bool
   default     = false
 }

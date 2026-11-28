@@ -13,9 +13,10 @@ export const NATIVE_WORKSPACE_ROOT = '/mnt/aidlc';
 // statfs f_type of an NFS mount (NFS_SUPER_MAGIC). EFS is mounted over NFS.
 const NFS_SUPER_MAGIC = 0x6969;
 
-// True when the storage is mounted at the root and this process can write to
-// it. A runtime without the storage has no directory there, or a directory of
-// the image or of another file system; neither counts.
+// True when the storage is mounted at the root and the runtime's user may write
+// there. This asks for the permission and writes nothing. A runtime without the
+// storage has no directory there, or a directory of the image or of another
+// file system; neither counts.
 export const nativeWorkspaceAvailable = async ({
   root = NATIVE_WORKSPACE_ROOT,
   inspectFilesystem = statfs,

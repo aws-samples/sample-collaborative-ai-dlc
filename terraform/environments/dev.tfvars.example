@@ -38,7 +38,13 @@ enable_waf = false
 # are testing them.
 # - Every session of the core runtime sees the mount.
 # - A mount that fails makes every invocation of that runtime fail.
+# - A permissions boundary (iam_permissions_boundary_arn) has to allow the
+#   runtime role elasticfilesystem:ClientMount, ClientWrite,
+#   DescribeAccessPoints and DescribeMountTargets.
 # - Setting it back to false deletes the file system and every workspace on it.
+#   New sessions of the core runtime fail while that apply runs, because the
+#   storage goes before the runtime stops asking for it. If the apply stops
+#   halfway, run it again.
 # enable_native_workspace_storage = true
 
 # Bedrock model pinning (for claude and opencode drivers)
